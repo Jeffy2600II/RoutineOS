@@ -79,9 +79,50 @@ export default function Home() {
   const selectedDay = days[selectedDayIndex] || days[todayIndex];
   const selectedTasks = schedule[selectedDay.key] || [];
   
+  // --- ฟังก์ชั่นทดสอบแจ้งเตือน ---
+  function testNotification() {
+    if ("Notification" in window) {
+      if (notificationPermission === "granted") {
+        new Notification("🎉 ทดสอบแจ้งเตือน!", {
+          body: "นี่คือข้อความทดสอบบน RoutineOS",
+          icon: "/icon-192.png"
+        });
+      } else if (notificationPermission === "denied") {
+        alert("คุณปฏิเสธการแจ้งเตือนบนเบราว์เซอร์ กรุณาเปิดสิทธิ์ใหม่เพื่อใช้งานฟีเจอร์นี้");
+      } else {
+        // ร้องขออีกครั้ง
+        Notification.requestPermission().then(result => {
+          setNotificationPermission(result);
+          if (result === "granted") {
+            new Notification("🎉 ทดสอบแจ้งเตือน!", {
+              body: "นี่คือข้อความทดสอบบน RoutineOS",
+              icon: "/icon-192.png"
+            });
+          }
+        });
+      }
+    }
+  }
+  
   return (
     <>
       <h1>📅 กิจวัตรประจำวัน</h1>
+      {/* ปุ่มทดสอบแจ้งเตือน */}
+      <button
+        onClick={testNotification}
+        style={{
+          marginBottom: 16,
+          padding: "8px 24px",
+          borderRadius: 8,
+          background: notificationPermission === "granted" ? "#5fdb5f" : "#eee",
+          color: notificationPermission === "granted" ? "#123" : "#666",
+          border: "none",
+          fontWeight: "bold",
+          cursor: "pointer"
+        }}
+      >
+        ทดสอบแจ้งเตือน
+      </button>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
         {days.map((d, idx) => (
           <button
