@@ -7,9 +7,17 @@ async function fetchSchedule() {
   return res.json();
 }
 
+function canUseNotificationAPI() {
+  // เช็คว่ามีฟีเจอร์นี้และ constructor
+  return typeof window !== "undefined"
+    && "Notification" in window
+    && typeof Notification === "function";
+}
+
 export default function Home() {
   const [schedule, setSchedule] = useState({});
-  
+  const [notificationStatus, setNotificationStatus] = useState("loading"); // รับค่า: granted/denied/default/not-supported
+
   const days = [
     { key: "sunday", label: "อาทิตย์" },
     { key: "monday", label: "จันทร์" },
@@ -21,22 +29,27 @@ export default function Home() {
   ];
   const todayIndex = new Date().getDay();
   const [selectedDayIndex, setSelectedDayIndex] = useState(todayIndex);
-  
+
   // ดึงข้อมูลกิจวัตร
   useEffect(() => {
     fetchSchedule().then(setSchedule);
   }, []);
-  
-  // ขอ permission แจ้งเตือนทันทีถ้ายังไม่ได้อนุญาต
+
+  // ขอ permission แจ้งเตือนทันทีถ้า supported
   useEffect(() => {
-    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission();
+    if (canUseNotificationAPI()) {
+      setNotificationStatus(Notification.permission);
+      if (Notification.permission === "default") {
+        Notification.requestPermission().then(setNotificationStatus);
+      }
+    } else {
+      setNotificationStatus("not-supported");
     }
   }, []);
-  
-  // ตั้ง timer แจ้งเตือนกิจวัตรวันนี้เมื่อ permissions เป็น granted
+
+  // ตั้ง timer แจ้งเตือนกิจวัตรวันนี้เมื่อ permission OK และ API พร้อม
   useEffect(() => {
-    if (typeof window === "undefined" || !("Notification" in window) || Notification.permission !== "granted") return;
+    if (!canUseNotificationAPI() || notificationStatus !== "granted") return;
     const tasks = schedule[days[todayIndex]?.key] || [];
     const timers = [];
     tasks.forEach(t => {
@@ -52,14 +65,15 @@ export default function Home() {
               icon: "/icon-192.png"
             });
           } catch (err) {
-            console.log("Notification error (main timer):", err);
+            // fallback
+            alert(`ถึงเวลาเริ่มกิจวัตร!\n${t.start} - ${t.task}`);
           }
         }, msUntilTask));
       }
     });
     return () => timers.forEach(clearTimeout);
-  }, [schedule, todayIndex]);
-  
+  }, [schedule, todayIndex, notificationStatus]);
+
   // sync วันอัตโนมัติ
   useEffect(() => {
     const interval = setInterval(() => {
@@ -68,57 +82,61 @@ export default function Home() {
     }, 60 * 1000);
     return () => clearInterval(interval);
   }, [selectedDayIndex]);
-  
+
   // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน
   function testNotification() {
-    if (!(typeof window !== "undefined" && "Notification" in window)) {
-      alert("เบราว์เซอร์คุณไม่รองรับการแจ้งเตือน");
-      return;
-    }
-    const permission = Notification.permission;
-    console.log("Current Notification.permission:", permission);
-    
-    if (permission === "granted") {
-      try {
-        const n = new Notification("🎉 ทดสอบแจ้งเตือน!", {
-          body: "นี่คือข้อความทดสอบบน RoutineOS",
-          icon: "/icon-192.png"
-        });
-        n.onshow = () => console.log("Notification shown");
-        n.onerror = (e) => console.log("Notification API error:", e);
-      } catch (err) {
-        console.error("Notification error:", err);
-        alert("เกิดข้อผิดพลาดขณะแจ้งเตือน ดู Console เพิ่มเติม");
-      }
-    } else if (permission === "denied") {
-      alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งานฟีเจอร์นี้");
-    } else {
-      Notification.requestPermission().then(result => {
-        if (result === "granted") {
-          try {
-            const n = new Notification("🎉 ทดสอบแจ้งเตือน!", {
-              body: "นี่คือข้อความทดสอบบน RoutineOS",
-              icon: "/icon-192.png"
-            });
-            n.onshow = () => console.log("Notification shown");
-          } catch (err) {
-            console.error("Notification error (pt2):", err);
-          }
-        } else if (result === "denied") {
-          alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งานฟีเจอร์นี้");
-        } else {
-          alert("คุณยังไม่ได้อนุญาตให้แจ้งเตือน");
+    if (canUseNotificationAPI()) {
+      if (Notification.permission === "granted") {
+        try {
+          new Notification("🎉 ทดสอบแจ้งเตือน!", {
+            body: "นี่คือข้อความทดสอบบน RoutineOS",
+            icon: "/icon-192.png"
+          });
+        } catch (err) {
+          alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (อาจไม่รองรับ)\n\nนี่คือข้อความทดสอบบน RoutineOS");
         }
-      });
+      } else if (Notification.permission === "denied") {
+        alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งานฟีเจอร์นี้");
+      } else {
+        Notification.requestPermission().then(result => {
+          setNotificationStatus(result);
+          if (result === "granted") {
+            try {
+              new Notification("🎉 ทดสอบแจ้งเตือน!", {
+                body: "นี่คือข้อความทดสอบบน RoutineOS",
+                icon: "/icon-192.png"
+              });
+            } catch (err) {
+              alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (อาจไม่รองรับ)\n\nนี่คือข้อความทดสอบบน RoutineOS");
+            }
+          } else if (result === "denied") {
+            alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งานฟีเจอร์นี้");
+          } else {
+            alert("คุณยังไม่ได้อนุญาตให้แจ้งเตือน");
+          }
+        });
+      }
+    } else {
+      alert("เบราว์เซอร์ของคุณไม่รองรับฟีเจอร์การแจ้งเตือน (Notification API)");
     }
   }
-  
+
   const selectedDay = days[selectedDayIndex] || days[todayIndex];
   const selectedTasks = schedule[selectedDay.key] || [];
-  
+
+  let notificationText = "";
+  switch (notificationStatus) {
+    case "granted": notificationText = "เปิดใช้งานแล้ว ✅"; break;
+    case "denied": notificationText = "คุณไม่อนุญาตแจ้งเตือน ❌"; break;
+    case "default": notificationText = "ยังไม่ได้อนุญาต 🟡"; break;
+    case "not-supported": notificationText = "เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน"; break;
+    default: notificationText = "กำลังตรวจสอบ...";
+  }
+
   return (
     <>
       <h1>📅 กิจวัตรประจำวัน</h1>
+      {/* ปุ่มทดสอบแจ้งเตือน */}
       <button
         onClick={testNotification}
         style={{
@@ -195,12 +213,11 @@ export default function Home() {
           ))
         )}
       </div>
-      <div style={{ marginTop:16,color:"#888" }}>
-        แจ้งเตือน: <strong>{
-          (typeof window !== "undefined" && "Notification" in window)
-            ? Notification.permission
-            : "เบราว์เซอร์ไม่รองรับ"
-        }</strong>
+      <div style={{ marginTop:16,color:"#888",fontSize:"15px" }}>
+        แจ้งเตือน: <strong>{notificationText}</strong>
+        {notificationStatus === "not-supported" 
+          ? <div style={{color:"#e23"}}>แนะนำให้เปิดผ่าน Chrome/Firefox/Edge บน Android, หรือ Safari (iOS 16.4 ขึ้นไป) และ "เพิ่มเป็นแอพ" เพื่อใช้งานแจ้งเตือนขั้นสูง</div>
+          : null}
       </div>
     </>
   );
