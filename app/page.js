@@ -1,15 +1,11 @@
-import fs from "fs";
-import path from "path";
+import schedule from "../data/schedule.json"; // ปรับแบบนี้สำหรับ Vercel/Next.js Server Component
 
-export default async function Home() {
+export default function Home() {
   const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
   const todayIndex = new Date().getDay();
   const today = days[todayIndex];
   
-  const filePath = path.join(process.cwd(), "data", "schedule.json");
-  const jsonData = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  
-  const tasks = jsonData[today] || [];
+  const tasks = schedule[today] || [];
   
   return (
     <>
