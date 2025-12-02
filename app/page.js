@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 
-// ดึงข้อมูลผ่าน API
+// ดึงข้อมูลจาก API
 async function fetchSchedule() {
   const res = await fetch("/api/schedule");
   return res.json();
@@ -9,103 +9,110 @@ async function fetchSchedule() {
 
 export default function Home() {
   const [schedule, setSchedule] = useState({});
-  const [notificationEnabled, setNotificationEnabled] = useState(false);
+  const days = [
+    { key: "sunday", label: "อาทิตย์" },
+    { key: "monday", label: "จันทร์" },
+    { key: "tuesday", label: "อังคาร" },
+    { key: "wednesday", label: "พุธ" },
+    { key: "thursday", label: "พฤหัส" },
+    { key: "friday", label: "ศุกร์" },
+    { key: "saturday", label: "เสาร์" },
+  ];
+  const todayIndex = new Date().getDay();
+  const [selectedDayIndex, setSelectedDayIndex] = useState(todayIndex);
   
-  // ดึงข้อมูลกิจวัตร
+  // ดึงข้อมูลกิจวัตรล่าสุด (auto sync)
   useEffect(() => {
     fetchSchedule().then(setSchedule);
   }, []);
   
-  const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-  const todayIndex = new Date().getDay();
-  const today = days[todayIndex];
-  const tasks = schedule[today] || [];
-  
-  // แจ้งเตือนกิจวัตรเมื่อถึงเวลาเริ่มต้น
-  useEffect(() => {
-    if (!notificationEnabled || tasks.length === 0) return;
-    
-    const notificationTimers = [];
-    
-    tasks.forEach((t, i) => {
-      // คำนวณเวลาเริ่มต้น
-      const [h, m] = t.start.split(":").map(Number);
-      const now = new Date();
-      const taskTime = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        h,
-        m,
-        0,
-        0,
-      );
-      const msUntilTask = taskTime.getTime() - now.getTime();
-      
-      // ตั้งเวลานับถอยหลังเฉพาะกิจวัตรที่ยังไม่เลยไปแล้ว
-      if (msUntilTask > 0) {
-        const timer = setTimeout(() => {
-          if (window.Notification && Notification.permission === "granted") {
-            new window.Notification("ถึงเวลาเริ่มกิจวัตร!", {
-              body: `${t.start} - ${t.task}`,
-              icon: "/icon-192.png"
-            });
-          }
-        }, msUntilTask);
-        notificationTimers.push(timer);
-      }
-    });
-    
-    // เคลียร์ timer เมื่อหยุดแจ้งเตือนหรือเปลี่ยนวัน
-    return () => {
-      notificationTimers.forEach(clearTimeout);
-    };
-  }, [notificationEnabled, tasks]);
-  
-  // ขอสิทธิ์แจ้งเตือน
-  function enableNotification() {
-    if ("Notification" in window) {
-      Notification.requestPermission().then(result => {
-        if (result === "granted") {
-          setNotificationEnabled(true);
-        }
-      });
-    } else {
-      alert("เบราว์เซอร์ไม่รองรับการแจ้งเตือน");
-    }
+  // เลือกวันในตารางเพื่อดูรายละเอียด
+  function handleSelectDay(idx) {
+    setSelectedDayIndex(idx);
   }
+  
+  // ปุ่ม sync: กลับสู่วันนี้
+  function handleSyncToday() {
+    setSelectedDayIndex(todayIndex);
+  }
+  
+  // auto sync เมื่อวันเปลี่ยน
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nowDayIdx = new Date().getDay();
+      if (nowDayIdx !== selectedDayIndex) {
+        setSelectedDayIndex(nowDayIdx);
+      }
+    }, 1000 * 60 * 1); // check ทุก 1 นาที
+    return () => clearInterval(interval);
+  }, [selectedDayIndex]);
+  
+  const selectedDay = days[selectedDayIndex] || days[todayIndex];
+  const selectedTasks = schedule[selectedDay.key] || [];
   
   return (
     <>
       <h1>📅 กิจวัตรประจำวัน</h1>
-      <h2 style={{ marginTop: "-10px", color: "#666" }}>
-        วันนี้: {today.toUpperCase()}
-      </h2>
-      <button
-        style={{ marginTop: 10, marginBottom: 15 }}
-        onClick={enableNotification}
-        disabled={notificationEnabled}
-      >
-        {notificationEnabled ? "เปิดใช้งานแจ้งเตือนแล้ว" : "เปิดแจ้งเตือนกิจวัตรวันนี้"}
-      </button>
-      <div style={{ marginTop: "20px" }}>
-        {tasks.map((t, i) => (
-          <div
-            key={i}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
+        {days.map((d, idx) => (
+          <button
+            key={d.key}
+            onClick={() => handleSelectDay(idx)}
             style={{
-              padding: "12px 16px",
-              marginBottom: "10px",
-              background: "#eef",
-              borderRadius: "10px",
-              display: "flex",
-              alignItems: "center",
-              gap: "16px"
+              background: idx === selectedDayIndex ? "#2257df" : "#f5f5f5",
+              color: idx === selectedDayIndex ? "#fff" : "#333",
+              padding: "6px 18px",
+              borderRadius: 8,
+              border: "none",
+              fontWeight: idx === selectedDayIndex ? "bold" : "normal",
+              cursor: "pointer",
+              boxShadow: idx === selectedDayIndex ? "0 2px 10px #ccd" : "none"
             }}
           >
-            <div style={{ fontWeight: "bold", minWidth: 85 }}>{t.start} – {t.end}</div>
-            <div>{t.task}</div>
-          </div>
+            {d.label}
+          </button>
         ))}
+        <button
+          onClick={handleSyncToday}
+          style={{
+            background: "#ffda60",
+            color: "#222",
+            padding: "6px 18px",
+            borderRadius: 8,
+            border: "none",
+            marginLeft: 6,
+            fontWeight: "bold",
+            cursor: "pointer"
+          }}
+        >
+          Sync (กลับสู่วันนี้)
+        </button>
+      </div>
+      <h2 style={{ marginTop: "-10px", color: "#666" }}>
+        กิจวัตรประจำวัน "{selectedDay.label}"
+      </h2>
+      <div style={{ marginTop: "18px" }}>
+        {selectedTasks.length === 0 ? (
+          <div style={{ color: "#999" }}>ไม่มีข้อมูลกิจวัตรวันนี้</div>
+        ) : (
+          selectedTasks.map((t, i) => (
+            <div
+              key={i}
+              style={{
+                padding: "12px 16px",
+                marginBottom: "10px",
+                background: "#eef",
+                borderRadius: "10px",
+                display: "flex",
+                alignItems: "center",
+                gap: "16px"
+              }}
+            >
+              <div style={{ fontWeight: "bold", minWidth: 85 }}>{t.start} – {t.end}</div>
+              <div>{t.task}</div>
+            </div>
+          ))
+        )}
       </div>
     </>
   );
