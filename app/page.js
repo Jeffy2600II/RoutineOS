@@ -9,6 +9,8 @@ async function fetchSchedule() {
 
 export default function Home() {
   const [schedule, setSchedule] = useState({});
+  const [notificationPermission, setNotificationPermission] = useState(typeof window !== "undefined" ? Notification?.permission : "default");
+  
   const days = [
     { key: "sunday", label: "อาทิตย์" },
     { key: "monday", label: "จันทร์" },
@@ -21,29 +23,56 @@ export default function Home() {
   const todayIndex = new Date().getDay();
   const [selectedDayIndex, setSelectedDayIndex] = useState(todayIndex);
   
-  // ดึงข้อมูลกิจวัตรล่าสุด (auto sync)
+  // ดึงข้อมูลกิจวัตรล่าสุด
   useEffect(() => {
     fetchSchedule().then(setSchedule);
   }, []);
   
-  // เลือกวันในตารางเพื่อดูรายละเอียด
-  function handleSelectDay(idx) {
-    setSelectedDayIndex(idx);
-  }
+  // ขออนุญาตแจ้งเตือนอัตโนมัติเมื่อเข้าหน้าจอ
+  useEffect(() => {
+    if ("Notification" in window && notificationPermission === "default") {
+      Notification.requestPermission().then(setNotificationPermission);
+    }
+  }, [notificationPermission]);
   
-  // ปุ่ม sync: กลับสู่วันนี้
-  function handleSyncToday() {
-    setSelectedDayIndex(todayIndex);
-  }
+  // ตั้ง timer แจ้งเตือนกิจวัตรของวันนี้
+  useEffect(() => {
+    if (notificationPermission !== "granted") return;
+    // เฉพาะกิจวัตรของวันปัจจุบัน
+    const tasks = schedule[days[todayIndex]?.key] || [];
+    const notificationTimers = [];
+    tasks.forEach((t, i) => {
+      const [h, m] = t.start.split(":").map(Number);
+      const now = new Date();
+      const taskTime = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        h,
+        m,
+        0,
+        0,
+      );
+      const msUntilTask = taskTime.getTime() - now.getTime();
+      if (msUntilTask > 0) {
+        const timer = setTimeout(() => {
+          new window.Notification("ถึงเวลาเริ่มกิจวัตร!", {
+            body: `${t.start} - ${t.task}`,
+            icon: "/icon-192.png"
+          });
+        }, msUntilTask);
+        notificationTimers.push(timer);
+      }
+    });
+    return () => notificationTimers.forEach(clearTimeout);
+  }, [schedule, notificationPermission, todayIndex]);
   
-  // auto sync เมื่อวันเปลี่ยน
+  // sync วันอัตโนมัติ ถ้าวันเปลี่ยน
   useEffect(() => {
     const interval = setInterval(() => {
       const nowDayIdx = new Date().getDay();
-      if (nowDayIdx !== selectedDayIndex) {
-        setSelectedDayIndex(nowDayIdx);
-      }
-    }, 1000 * 60 * 1); // check ทุก 1 นาที
+      if (nowDayIdx !== selectedDayIndex) setSelectedDayIndex(nowDayIdx);
+    }, 1000 * 60 * 1);
     return () => clearInterval(interval);
   }, [selectedDayIndex]);
   
@@ -57,7 +86,7 @@ export default function Home() {
         {days.map((d, idx) => (
           <button
             key={d.key}
-            onClick={() => handleSelectDay(idx)}
+            onClick={() => setSelectedDayIndex(idx)}
             style={{
               background: idx === selectedDayIndex ? "#2257df" : "#f5f5f5",
               color: idx === selectedDayIndex ? "#fff" : "#333",
@@ -73,7 +102,7 @@ export default function Home() {
           </button>
         ))}
         <button
-          onClick={handleSyncToday}
+          onClick={() => setSelectedDayIndex(todayIndex)}
           style={{
             background: "#ffda60",
             color: "#222",
@@ -113,6 +142,9 @@ export default function Home() {
             </div>
           ))
         )}
+      </div>
+      <div style={{ marginTop:16,color:"#888" }}>
+        แจ้งเตือน: {notificationPermission === "granted" ? "เปิดใช้งานแล้ว" : notificationPermission === "denied" ? "คุณไม่อนุญาตแจ้งเตือน" : "ยังไม่ได้อนุญาต"}
       </div>
     </>
   );
