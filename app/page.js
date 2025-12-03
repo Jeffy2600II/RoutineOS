@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 // ดึงข้อมูลกิจวัตร
 async function fetchSchedule() {
-  const res = await fetch("/api/schedulereturnreturn res.json();
+  const res = await fetch("/api/schedule");
+  return res.json();
 }
 
 function canUseNotificationAPI() {
@@ -22,7 +23,7 @@ export default function Home() {
   const [nextTaskInfo, setNextTaskInfo] = useState(null);
   const [notifiedTasks, setNotifiedTasks] = useState(new Set());
   const [realtimeStatus, setRealtimeStatus] = useState("🟡 ยังไม่เชื่อมต่อ");
-  const [eventSource, setEventSource] = useState(null);
+  const eventSourceRef = useRef(null);
 
   const days = [
     { key: "sunday", label: "อาทิตย์" },
@@ -42,189 +43,154 @@ export default function Home() {
     fetchSchedule().then(setSchedule);
   }, []);
 
-  // ✨ ลงทะเบียน Service Worker + Real-Time Connection
+  // ลงทะเบียน Service Worker และเชื่อมต่อ SSE Real-Time
   useEffect(() => {
     if (canUseNotificationAPI() && "serviceWorker" in navigator) {
       navigator.serviceWorker
         .register("/sw.js")
         .then((reg) => {
-          console.log("✅ Service Worker registered:", reg);
           setRegistration(reg);
-
-          // ✨ เชื่อมต่อ SSE Real-Time
           connectToRealtimeNotifications();
         })
-        . catch((error) => {
+        .catch((error) => {
           console.error("❌ Service Worker registration failed:", error);
         });
     }
+    // cleanup on unmount
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+    // eslint-disable-next-line
   }, []);
 
-  // ✨ Real-Time Connection via SSE
-  const connectToRealtimeNotifications = () => {
-    if (eventSource) {
-      eventSource. close();
+  // เชื่อมต่อ SSE Real-Time
+  function connectToRealtimeNotifications() {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
     }
+    const es = new window.EventSource("/api/notifications/subscribe");
+    eventSourceRef.current = es;
 
-    const newEventSource = new EventSource("/api/notifications/subscribe");
-
-    newEventSource.onopen = () => {
-      console. log("✅ Real-Time connection established");
+    es.onopen = () => {
       setRealtimeStatus("🟢 เชื่อมต่อแล้ว (Real-Time)");
     };
-
-    newEventSource.onmessage = (event) => {
+    es.onmessage = (event) => {
       try {
-        const data = JSON. parse(event.data);
-
+        const data = JSON.parse(event.data);
         if (data.type === "upcoming-task") {
-          console.log("🔔 Real-time task received:", data.task);
-
           const taskId = `${data.dayIndex}-${data.task.start}-${data.task.task}`;
-
           if (!notifiedTasks.has(taskId)) {
-            // ✅ ส่ง notification
             sendNotification(`🔔 ถึงเวลาเริ่มกิจวัตร!`, {
-              body: `${data.task. start} - ${data.task. task}\n\n📝 ${data.task.description}`,
+              body: `${data.task.start} - ${data.task.task}\n\n📝 ${data.task.description}`,
               tag: `task-${data.task.start}`,
             });
-
             setNotifiedTasks((prev) => new Set(prev).add(taskId));
             playNotificationSound();
           }
         }
       } catch (err) {
-        // ข้าม message ที่ parse ไม่ได้
+        // ignore
       }
     };
-
-    newEventSource.onerror = (error) => {
-      console. error("❌ Real-Time connection error:", error);
+    es.onerror = () => {
       setRealtimeStatus("🟡 การเชื่อมต่อขาดหายไป กำลัง reconnect...");
-
-      newEventSource.close();
-
-      // ✅ Reconnect หลังจาก 3 วินาที
-      setTimeout(() => {
-        console.log("🔄 Reconnecting...");
-        connectToRealtimeNotifications();
-      }, 3000);
+      es.close();
+      setTimeout(() => connectToRealtimeNotifications(), 3000);
     };
-
-    setEventSource(newEventSource);
-  };
+  }
 
   // ขอ permission แจ้งเตือน
   useEffect(() => {
     if (canUseNotificationAPI()) {
       setNotificationStatus(Notification.permission);
       if (Notification.permission === "default") {
-        Notification.requestPermission(). then(setNotificationStatus);
+        Notification.requestPermission().then(setNotificationStatus);
       }
     } else {
       setNotificationStatus("not-supported");
     }
   }, []);
 
-  // ฟังก์ชัน: ส่งแจ้งเตือน
+  // ส่งแจ้งเตือน
   const sendNotification = async (title, options = {}) => {
     if (!registration) {
       console.warn("⚠️ Service Worker not ready");
       return;
     }
-
     try {
       await registration.showNotification(title, {
         badge: "/icon-192.png",
         icon: "/icon-192.png",
         vibrate: [200, 100, 200],
         requireInteraction: true,
-        ... options,
+        ...options,
       });
-      console.log(`✅ Notification sent: ${title}`);
     } catch (err) {
       console.error("❌ Notification error:", err);
     }
   };
 
-  // ฟังก์ชัน: แปลงเวลา HH:MM เป็นวินาทีตั้งแต่เที่ยงคืน
+  // แปลงเวลา HH:MM เป็นวินาที
   const timeToSeconds = (timeStr) => {
     const [h, m] = timeStr.split(":").map(Number);
     return h * 3600 + m * 60;
   };
 
-  // ฟังก์ชัน: เล่นเสียงแจ้งเตือน
+  // เล่นเสียงแจ้งเตือน
   const playNotificationSound = () => {
     try {
-      const audioContext = new (window.AudioContext ||
-        window.webkitAudioContext)();
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
-
       oscillator.connect(gainNode);
       gainNode.connect(audioContext.destination);
-
       oscillator.frequency.value = 800;
       oscillator.type = "sine";
-
       gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(
-        0.01,
-        audioContext.currentTime + 0. 5
-      );
-
-      oscillator. start(audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+      oscillator.start(audioContext.currentTime);
       oscillator.stop(audioContext.currentTime + 0.5);
-    } catch (err) {
-      console.warn("⚠️ Audio notification not available");
-    }
+    } catch (err) {}
   };
 
   // อัปเดตเวลาปัจจุบันทุกวินาที
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 1000);
-
+    const interval = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(interval);
   }, []);
 
-  // ฟังก์ชัน: หางานถัดไป
+  // ตรวจสอบงานถัดไป
   const getNextTask = () => {
-    const tasks = schedule[days[todayIndex]?. key] || [];
+    const tasks = schedule[days[todayIndex]?.key] || [];
     const now = new Date();
-    const currentSeconds =
-      now.getHours() * 3600 + now.getMinutes() * 60 + now. getSeconds();
-
+    const currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
     for (let task of tasks) {
       const taskStartSeconds = timeToSeconds(task.start);
-
       if (taskStartSeconds > currentSeconds) {
         const secondsUntil = taskStartSeconds - currentSeconds;
         const hours = Math.floor(secondsUntil / 3600);
         const minutes = Math.floor((secondsUntil % 3600) / 60);
         const seconds = secondsUntil % 60;
-
         return {
           task: task.task,
           description: task.description,
           start: task.start,
-          timeUntil:
-            hours > 0
-              ? `${hours}ชม ${minutes}นาที ${seconds}วินาที`
-              : `${minutes}นาที ${seconds}วินาที`,
+          timeUntil: hours > 0
+            ? `${hours}ชม ${minutes}นาที ${seconds}วินาที`
+            : `${minutes}นาที ${seconds}วินาที`,
           isImmediate: secondsUntil < 300,
         };
       }
     }
-
     return null;
   };
 
   // อัปเดตงานถัดไป
   useEffect(() => {
-    const next = getNextTask();
-    setNextTaskInfo(next);
+    setNextTaskInfo(getNextTask());
+    // eslint-disable-next-line
   }, [currentTime, schedule, todayIndex]);
 
   // Sync วันอัตโนมัติ
@@ -239,23 +205,17 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [selectedDayIndex]);
 
-  // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน
+  // ปุ่มทดสอบแจ้งเตือน
   async function testNotification() {
     if (!canUseNotificationAPI()) {
-      alert(
-        "เบราว์เซอร์ของคุณไม่รองรับฟีเจอร์การแจ้งเตือน (Notification API)"
-      );
+      alert("เบราว์เซอร์ของคุณไม่รองรับฟีเจอร์การแจ้งเตือน (Notification API)");
       return;
     }
-
-    console.log("📢 Testing notification.  Permission:", Notification.permission);
-
     if (Notification.permission === "granted") {
-      if (! registration) {
+      if (!registration) {
         alert("Service Worker ยังไม่พร้อม กรุณารอสักครู่");
         return;
       }
-
       await sendNotification("🎉 ทดสอบแจ้งเตือน!", {
         body: "นี่คือข้อความทดสอบจากระบบ RoutineOS\n\n✅ ระบบแจ้งเตือนทำงานปกติแล้ว",
       });
@@ -265,14 +225,13 @@ export default function Home() {
         "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์:\n1. ไปที่ Settings\n2. หา Notifications\n3. เลือก RoutineOS และเปลี่ยนเป็น Allow"
       );
     } else if (Notification.permission === "default") {
-      Notification.requestPermission(). then(async (result) => {
+      Notification.requestPermission().then(async (result) => {
         setNotificationStatus(result);
         if (result === "granted") {
           if (!registration) {
             alert("Service Worker ยังไม่พร้อม กรุณารอสักครู่");
             return;
           }
-
           await sendNotification("🎉 ทดสอบแจ้งเตือน!", {
             body: "นี่คือข้อความทดสอบจากระบบ RoutineOS\n\n✅ ระบบแจ้งเตือนทำงานปกติแล้ว",
           });
@@ -283,7 +242,7 @@ export default function Home() {
   }
 
   const selectedDay = days[selectedDayIndex] || days[todayIndex];
-  const selectedTasks = schedule[selectedDay?. key] || [];
+  const selectedTasks = schedule[selectedDay?.key] || [];
 
   const currentTimeFormatted = currentTime.toLocaleTimeString("th-TH", {
     hour: "2-digit",
@@ -319,8 +278,7 @@ export default function Home() {
   return (
     <>
       <h1>📅 ตารางกิจวัตรประจำวัน</h1>
-
-      {/* ส่วนเวลาปัจจุบัน */}
+      {/* เวลา */}
       <div
         style={{
           marginBottom: 20,
@@ -328,7 +286,7 @@ export default function Home() {
           background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
           color: "#fff",
           borderRadius: 12,
-          boxShadow: "0 4px 15px rgba(102, 126, 234, 0.4)",
+          boxShadow: "0 4px 15px rgba(102,126,234,0.4)",
           textAlign: "center",
         }}
       >
@@ -348,8 +306,7 @@ export default function Home() {
           {days[todayIndex]?.label} • {currentTime.toLocaleDateString("th-TH")}
         </div>
       </div>
-
-      {/* ส่วนแสดงงานถัดไป */}
+      {/* งานถัดไป */}
       {nextTaskInfo && (
         <div
           style={{
@@ -361,15 +318,15 @@ export default function Home() {
             color: "#fff",
             borderRadius: 12,
             boxShadow: nextTaskInfo.isImmediate
-              ? "0 4px 20px rgba(245, 87, 108, 0.5)"
-              : "0 4px 15px rgba(79, 172, 254, 0.4)",
-            animation: nextTaskInfo.isImmediate ?  "pulse 1s infinite" : "none",
+              ? "0 4px 20px rgba(245,87,108,0.5)"
+              : "0 4px 15px rgba(79,172,254,0.4)",
+            animation: nextTaskInfo.isImmediate ? "pulse 1s infinite" : "none",
           }}
         >
           <style>{`
             @keyframes pulse {
               0%, 100% { opacity: 1; }
-              50% { opacity: 0. 8; }
+              50% { opacity: 0.8; }
             }
           `}</style>
           <div style={{ fontSize: "14px", opacity: 0.9 }}>
@@ -383,7 +340,7 @@ export default function Home() {
           </div>
           <div
             style={{
-              fontSize: nextTaskInfo.isImmediate ?  "20px" : "16px",
+              fontSize: nextTaskInfo.isImmediate ? "20px" : "16px",
               marginTop: 8,
               fontWeight: "bold",
               fontFamily: "monospace",
@@ -393,7 +350,6 @@ export default function Home() {
           </div>
         </div>
       )}
-
       {/* ปุ่มทดสอบแจ้งเตือน */}
       <button
         onClick={testNotification}
@@ -407,7 +363,7 @@ export default function Home() {
           fontWeight: "bold",
           cursor: "pointer",
           fontSize: "16px",
-          boxShadow: "0 4px 10px rgba(95, 219, 95, 0.3)",
+          boxShadow: "0 4px 10px rgba(95, 219, 95,0.3)",
           transition: "all 0.3s",
         }}
         onMouseEnter={(e) => (e.target.style.background = "#4ac94a")}
@@ -415,7 +371,6 @@ export default function Home() {
       >
         🔔 ทดสอบแจ้งเตือน
       </button>
-
       {/* ปุ่มเลือกวัน */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
         {days.map((d, idx) => (
@@ -423,16 +378,14 @@ export default function Home() {
             key={d.key}
             onClick={() => setSelectedDayIndex(idx)}
             style={{
-              background:
-                idx === selectedDayIndex ?  "#2257df" : "#f5f5f5",
+              background: idx === selectedDayIndex ? "#2257df" : "#f5f5f5",
               color: idx === selectedDayIndex ? "#fff" : "#333",
               padding: "8px 16px",
               borderRadius: 8,
               border: "none",
               fontWeight: idx === selectedDayIndex ? "bold" : "normal",
               cursor: "pointer",
-              boxShadow:
-                idx === selectedDayIndex ?  "0 2px 10px #ccd" : "none",
+              boxShadow: idx === selectedDayIndex ? "0 2px 10px #ccd" : "none",
               transition: "all 0.2s",
             }}
           >
@@ -458,15 +411,13 @@ export default function Home() {
           ↩️ วันนี้
         </button>
       </div>
-
       {/* หัวข้อ */}
       <h2 style={{ marginTop: "-10px", color: "#666" }}>
-        📋 กิจวัตรประจำวัน "{selectedDay. label}"
+        📋 กิจวัตรประจำวัน "{selectedDay.label}"
       </h2>
-
       {/* รายการกิจวัตร */}
       <div style={{ marginTop: "18px" }}>
-        {selectedTasks.length === 0 ?  (
+        {selectedTasks.length === 0 ? (
           <div
             style={{
               color: "#999",
@@ -482,15 +433,14 @@ export default function Home() {
           selectedTasks.map((t, i) => {
             const isCurrentTask =
               timeToSeconds(t.start) <=
-                new Date(). getHours() * 3600 +
+                new Date().getHours() * 3600 +
                   new Date().getMinutes() * 60 +
                   new Date().getSeconds() &&
-              timeToSeconds(t. end) >
+              timeToSeconds(t.end) >
                 new Date().getHours() * 3600 +
                   new Date().getMinutes() * 60 +
                   new Date().getSeconds() &&
               selectedDayIndex === todayIndex;
-
             return (
               <div
                 key={i}
@@ -498,14 +448,12 @@ export default function Home() {
                   padding: "16px",
                   marginBottom: "12px",
                   background: isCurrentTask
-                    ?  "linear-gradient(135deg, #fff5b4 0%, #ffe082 100%)"
+                    ? "linear-gradient(135deg, #fff5b4 0%, #ffe082 100%)"
                     : "linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)",
                   borderRadius: "10px",
-                  borderLeft: isCurrentTask
-                    ? "5px solid #ff9800"
-                    : "5px solid #2257df",
+                  borderLeft: isCurrentTask ? "5px solid #ff9800" : "5px solid #2257df",
                   boxShadow: isCurrentTask
-                    ? "0 4px 15px rgba(255, 152, 0, 0.3)"
+                    ? "0 4px 15px rgba(255,152,0,0.3)"
                     : "0 2px 8px rgba(0,0,0,0.1)",
                   animation: isCurrentTask ? "pulse 1s infinite" : "none",
                 }}
@@ -555,7 +503,6 @@ export default function Home() {
           })
         )}
       </div>
-
       {/* สถานะแจ้งเตือน */}
       <div
         style={{
@@ -578,27 +525,19 @@ export default function Home() {
         >
           {notificationText}
         </div>
-
         {/* Real-Time Status */}
         <div
           style={{
             fontSize: "13px",
             marginTop: 12,
             padding: "8px 12px",
-            background:
-              realtimeStatus. includes("🟢")
-                ? "#e8f5e9"
-                : "#fff3e0",
+            background: realtimeStatus.includes("🟢") ? "#e8f5e9" : "#fff3e0",
             borderRadius: 6,
-            color:
-              realtimeStatus.includes("🟢")
-                ?  "#2e7d32"
-                : "#e65100",
+            color: realtimeStatus.includes("🟢") ? "#2e7d32" : "#e65100",
           }}
         >
           <strong>🌐 Real-Time Status:</strong> {realtimeStatus}
         </div>
-
         {notificationStatus === "not-supported" && (
           <div
             style={{
@@ -610,11 +549,10 @@ export default function Home() {
           >
             ⚠️ แนะนำให้ใช้:<br />
             • <strong>Android:</strong> Chrome, Firefox, Edge<br />
-            • <strong>iOS:</strong> Safari (iOS 16. 4+)<br />
+            • <strong>iOS:</strong> Safari (iOS 16.4+)<br />
             • <strong>Desktop:</strong> Chrome, Firefox, Edge
           </div>
         )}
-
         {notificationStatus === "denied" && (
           <div
             style={{
@@ -631,7 +569,6 @@ export default function Home() {
           </div>
         )}
       </div>
-
       {/* ส่วนท้าย */}
       <div
         style={{
