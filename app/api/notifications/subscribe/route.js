@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import schedule from "../../../../data/schedule.json";
 
-// ✨ Store clients ที่เชื่อมต่ออยู่
+// เก็บ client connections (SSE)
 const connectedClients = new Set();
 
-// ฟังก์ชัน: ส่ง notification ให้ทุก client ที่เชื่อมต่ออยู่
+// Dedup map เพื่อป้องกันส่งซ้ำ (คีย์ -> true)
+const notifiedTasks = new Map();
+
+// ฟังก์ชันส่งข้อความให้ client ทุกตัว
 function broadcastNotification(data) {
   connectedClients.forEach((client) => {
     try {
@@ -17,21 +20,18 @@ function broadcastNotification(data) {
 }
 
 export async function GET(req) {
-  // ✅ SSE Connection
   console.log("🔌 Client connected to SSE");
   
   const encoder = new TextEncoder();
   
-  // สร้าง Response stream
   const stream = new ReadableStream({
     start(controller) {
-      // ✅ เพิ่มลงใน connected clients
       const client = {
         write: (data) => {
           try {
             controller.enqueue(encoder.encode(data));
           } catch (err) {
-            console.error("❌ Stream error:", err);
+            console.error("❌ Stream enqueue error:", err);
           }
         },
       };
@@ -39,31 +39,33 @@ export async function GET(req) {
       connectedClients.add(client);
       console.log(`✅ Total connected clients: ${connectedClients.size}`);
       
-      // ส่ง message ตอน connect
+      // ส่งข้อความตอนเชื่อมต่อ
       client.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
       
-      // ✅ Clean up เมื่อ disconnect
+      // คืนค่าฟังก์ชัน cleanup เมื่อ stream ถูกปิด
       return () => {
         connectedClients.delete(client);
-        console.log(
-          `❌ Client disconnected.  Remaining: ${connectedClients.size}`
-        );
+        console.log(`❌ Client disconnected. Remaining: ${connectedClients.size}`);
       };
+    },
+    cancel(reason) {
+      // เมื่อลูกค้าปิด connection
+      console.log("❌ SSE stream cancelled:", reason);
     },
   });
   
   return new NextResponse(stream, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
       "Access-Control-Allow-Origin": "*",
     },
   });
 }
 
 export async function POST(req) {
-  // API สำหรับ Service Worker เช็ค task ปัจจุบัน
+  // API สำหรับ Service Worker หรือ Polling เรียกมาเช็ค task ปัจจุบัน
   try {
     const body = await req.json();
     const { dayIndex } = body;
@@ -92,14 +94,26 @@ export async function POST(req) {
       return timeDiff >= 0 && timeDiff <= 300;
     });
     
-    // ✅ Broadcast ให้ทุก client
+    // Dedup per-day to avoid re-sending same notification many times
+    const dateKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    
     upcomingTasks.forEach((task) => {
-      broadcastNotification({
-        type: "upcoming-task",
-        task: task,
-        dayIndex: dayIndex,
-        timestamp: new Date().toISOString(),
-      });
+      const taskId = `${dateKey}-${dayIndex}-${task.start}-${task.task}`;
+      if (!notifiedTasks.has(taskId)) {
+        // Broadcast to SSE clients
+        broadcastNotification({
+          type: "upcoming-task",
+          task: task,
+          dayIndex: dayIndex,
+          timestamp: new Date().toISOString(),
+        });
+        
+        // Mark as notified and schedule TTL removal
+        notifiedTasks.set(taskId, true);
+        setTimeout(() => {
+          notifiedTasks.delete(taskId);
+        }, 10 * 60 * 1000); // 10 นาที
+      }
     });
     
     return NextResponse.json({
@@ -108,7 +122,7 @@ export async function POST(req) {
       clientsNotified: connectedClients.size,
     });
   } catch (err) {
-    console.error("❌ Error:", err);
+    console.error("❌ Error in /api/notifications/subscribe POST:", err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

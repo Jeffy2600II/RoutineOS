@@ -65,7 +65,7 @@ export default function Home() {
     // eslint-disable-next-line
   }, []);
 
-  // เชื่อมต่อ SSE Real-Time
+  // เชื่อมต่อ SSE Real-Time (UI client)
   function connectToRealtimeNotifications() {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -113,14 +113,16 @@ export default function Home() {
     }
   }, []);
 
-  // ส่งแจ้งเตือน
+  // ส่งแจ้งเตือนผ่าน Service Worker registration
   const sendNotification = async (title, options = {}) => {
     if (!registration) {
       console.warn("⚠️ Service Worker not ready");
       return;
     }
     try {
-      await registration.showNotification(title, {
+      // Use the active service worker to show notification
+      const swReg = await navigator.serviceWorker.ready;
+      await swReg.showNotification(title, {
         badge: "/icon-192.png",
         icon: "/icon-192.png",
         vibrate: [200, 100, 200],
@@ -222,7 +224,7 @@ export default function Home() {
       playNotificationSound();
     } else if (Notification.permission === "denied") {
       alert(
-        "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์:\n1. ไปที่ Settings\n2. หา Notifications\n3. เลือก RoutineOS และเปลี่ยนเป็น Allow"
+        "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์:\n1. ไปที่ Settings / การตั้งค่า\n2. หา Notifications / การแจ้งเตือน\n3. ค้นหา RoutineOS และเปลี่ยนเป็น \"Allow\""
       );
     } else if (Notification.permission === "default") {
       Notification.requestPermission().then(async (result) => {
@@ -274,6 +276,41 @@ export default function Home() {
       notificationText = "กำลังตรวจสอบ...";
       notificationColor = "#2196f3";
   }
+
+  // ------------------------------
+  // New: Periodic UI-side scheduler check (ช่วยให้ UI รู้สถานะและส่งข้อมูลไป SW)
+  // ------------------------------
+  useEffect(() => {
+    let intervalId = null;
+    let stopped = false;
+
+    async function doCheck() {
+      try {
+        const res = await fetch("/api/scheduler");
+        const data = await res.json();
+        // ส่ง message ให้ active service worker (ถ้ามี)
+        if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({
+            type: "scheduler-check",
+            payload: data,
+          });
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    // เรียกทันที และตั้ง interval ทุก 30 วินาที เพื่อช่วยในการ sync ให้แม่นยำ (UI-side)
+    doCheck();
+    intervalId = setInterval(() => {
+      if (!stopped) doCheck();
+    }, 30 * 1000);
+
+    return () => {
+      stopped = true;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [registration]);
 
   return (
     <>
@@ -586,7 +623,7 @@ export default function Home() {
           ⭐ งานปัจจุบันจะไฮไลต์เหลืองอัตโนมัติ
         </div>
         <div style={{ marginTop: 8 }}>
-          🌐 เชื่อมต่อแบบ WebSocket/SSE แท้จริง
+          🌐 เชื่อมต่อแบบ WebSocket/SSE แท้จริง (พร้อม fallback)
         </div>
       </div>
     </>

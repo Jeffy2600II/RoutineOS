@@ -1,4 +1,11 @@
 const CACHE_NAME = "routineos-v2";
+const POLLING_INTERVAL_MS = 30 * 1000; // 30 วินาที (fallback polling)
+const DEDUP_TTL_MS = 10 * 60 * 1000; // 10 นาที
+
+let pollingTimer = null;
+let sseReader = null;
+let sseControllerActive = false;
+const sentNotifications = new Map(); // key -> timestamp
 
 self.addEventListener("install", (event) => {
   console.log("✅ Service Worker installed");
@@ -8,124 +15,213 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   console.log("✅ Service Worker activated");
   self.clients.claim();
-  
-  // ✨ เริ่มตรวจสอบเมื่อ activate
-  event.waitUntil(startRealtimeMonitoring());
+  // เริ่ม monitoring แบบอิสระ (ไม่ต้องมีหน้าเว็บเปิด)
+  event.waitUntil(startIndependentMonitoring());
 });
 
-// 🎯 Real-Time Monitoring - ตรวจสอบกิจวัตรแบบ Real-Time
-async function startRealtimeMonitoring() {
+// เริ่มการตรวจสอบแบบอิสระ: พยายามเชื่อม SSE ก่อน ถ้าไม่ได้ใช้ polling
+async function startIndependentMonitoring() {
   try {
-    console.log("🚀 Starting Real-Time monitoring...");
+    console.log("🚀 Starting independent monitoring in SW...");
     
-    // ✅ เชื่อมต่อ SSE
-    const response = await fetch("/api/notifications/subscribe");
+    // พยายามเชื่อมต่อ SSE (streaming)
+    await startSSEStream();
     
-    if (!response.body) {
-      console.warn("⚠️ SSE not supported, falling back to polling");
-      return startPolling();
+    // ถ้าไม่สามารถอ่าน SSE stream ได้ ให้เริ่ม polling
+    if (!sseControllerActive) {
+      startPolling();
     }
     
-    const reader = response.body.getReader();
+  } catch (err) {
+    console.error("❌ startIndependentMonitoring error:", err);
+    startPolling();
+  }
+}
+
+// ฟังก์ชันเชื่อม SSE โดยการ fetch และอ่าน stream
+async function startSSEStream() {
+  try {
+    console.log("🔗 Attempting to open SSE stream from SW...");
+    const resp = await fetch("/api/notifications/subscribe", {
+      headers: { Accept: "text/event-stream" },
+      cache: "no-store",
+    });
+    
+    if (!resp || !resp.body) {
+      console.warn("⚠️ SSE stream not available in SW. Response body missing.");
+      sseControllerActive = false;
+      return;
+    }
+    
+    const reader = resp.body.getReader();
     const decoder = new TextDecoder();
+    sseReader = reader;
+    sseControllerActive = true;
+    
+    let buffered = "";
     
     while (true) {
       const { done, value } = await reader.read();
-      
       if (done) {
-        console.log("🔌 SSE connection closed");
-        // ✅ Reconnect เมื่อ disconnect
-        setTimeout(() => startRealtimeMonitoring(), 3000);
+        console.log("🔌 SSE stream closed by server");
+        sseControllerActive = false;
+        // ปิด reader แล้วลอง reconnect หลังจาก delay
+        try { reader.releaseLock(); } catch (e) {}
+        setTimeout(() => startSSEStream(), 5000);
         break;
       }
       
-      const text = decoder.decode(value);
-      const lines = text.split("\n");
+      buffered += decoder.decode(value, { stream: true });
       
-      for (let line of lines) {
-        if (line.startsWith("data: ")) {
+      // แยกเป็นบรรทัด และ parse data: lines
+      let parts = buffered.split("\n");
+      // ถ้บรรทัดสุดท้ายยังไม่จบ ให้เก็บไว้ใน buffered
+      buffered = parts.pop();
+      
+      for (let line of parts) {
+        line = line.trim();
+        if (!line) continue;
+        if (line.startsWith("data:")) {
+          const raw = line.slice(5).trim();
           try {
-            const data = JSON.parse(line.slice(6));
-            
-            if (data.type === "upcoming-task") {
-              console.log("🔔 Real-time notification received:", data.task);
-              
-              // ✅ ส่ง notification
-              await self.registration.showNotification(
-                `🔔 ถึงเวลาเริ่มกิจวัตร! `,
-                {
-                  body: `${data.task.start} - ${data.task.task}\n\n📝 ${data.task.description}`,
-                  tag: `task-${data.task.start}`,
-                  badge: "/icon-192.png",
-                  icon: "/icon-192.png",
-                  vibrate: [200, 100, 200],
-                  requireInteraction: true,
-                  timestamp: Date.now(),
-                }
-              );
+            const data = JSON.parse(raw);
+            if (data?.type === "upcoming-task") {
+              await handleUpcomingTask(data);
             }
           } catch (err) {
-            // ข้าม line ว่าง
+            // ถ้า parse ไม่ได้ ให้ข้าม
+            // console.warn("⚠️ SSE parse error:", err);
           }
         }
       }
     }
   } catch (err) {
-    console.error("❌ Real-time monitoring error:", err);
-    // Fallback ไป polling
-    startPolling();
+    console.error("❌ SSE error in SW:", err);
+    sseControllerActive = false;
+    // reconnect with delay
+    setTimeout(() => startSSEStream(), 5000);
   }
 }
 
-// 🔄 Fallback: Polling ทุก 5 นาที (ถ้า SSE ไม่ได้ผล)
-async function startPolling() {
-  console.log("📡 Starting polling mode (fallback)...");
+// Polling fallback: เรียก API เพื่อให้ server ส่ง event (POST) ทุก interval
+function startPolling() {
+  console.log("📡 Starting polling from SW (fallback)...");
+  if (pollingTimer) clearInterval(pollingTimer);
   
-  while (true) {
-    try {
-      const now = new Date();
-      const dayIndex = now.getDay();
-      
-      // ✅ POST เพื่อให้ server ส่ง notification
-      await fetch("/api/notifications/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dayIndex }),
-      });
-      
-      console.log("📡 Polling check completed");
-    } catch (err) {
-      console.error("❌ Polling error:", err);
+  // ทำการเช็คทันที
+  checkAndNotify().catch((e) => console.error("❌ initial check error:", e));
+  
+  pollingTimer = setInterval(() => {
+    checkAndNotify().catch((e) => console.error("❌ polling check error:", e));
+  }, POLLING_INTERVAL_MS);
+}
+
+// ฟังก์ชัน POST ไปยัง endpoint เพื่อให้ server ประมวลผลและ broadcast (server-side)
+async function checkAndNotify() {
+  try {
+    const now = new Date();
+    const dayIndex = now.getDay();
+    
+    const resp = await fetch("/api/notifications/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dayIndex }),
+      cache: "no-store",
+    });
+    
+    if (!resp.ok) {
+      console.warn("⚠️ checkAndNotify response not OK:", resp.status);
+    } else {
+      // server จะ broadcast ผ่าน SSE — SW อาจได้รับจาก SSE stream
+      // แต่ในบาง environment SSE อาจถูกปิด -> server อาจตอบด้วยข้อมูล; handle ถ้ามี JSON คืนมา
+      try {
+        const json = await resp.clone().json().catch(() => null);
+        if (json && json.tasksNotified && json.tasksNotified > 0) {
+          console.log("📡 Server reported tasks notified:", json.tasksNotified);
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+  } catch (err) {
+    console.error("❌ checkAndNotify error:", err);
+  }
+}
+
+// จัดการ task ที่จะเกิดขึ้น: แสดง notification และป้องกันซ้ำ
+async function handleUpcomingTask(data) {
+  try {
+    const key = `${data.dayIndex}-${data.task.start}-${data.task.task}`;
+    const now = Date.now();
+    
+    // ตรวจสอบ dedup
+    const prev = sentNotifications.get(key);
+    if (prev && now - prev < DEDUP_TTL_MS) {
+      // ส่งแล้วในช่วง TTL
+      return;
     }
     
-    // ✅ รอ 5 นาที ก่อนเช็คครั้งถัดไป
-    await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
+    // บันทึกเวลา
+    sentNotifications.set(key, now);
+    // ตั้ง timeout เพื่อลบ cache หลัง TTL
+    setTimeout(() => sentNotifications.delete(key), DEDUP_TTL_MS + 1000);
+    
+    // แสดง Notification
+    await self.registration.showNotification(`🔔 ถึงเวลาเริ่มกิจวัตร!`, {
+      body: `${data.task.start} - ${data.task.task}\n\n📝 ${data.task.description || ""}`,
+      tag: `task-${data.task.start}-${String(data.dayIndex)}`,
+      badge: "/icon-192.png",
+      icon: "/icon-192.png",
+      vibrate: [200, 100, 200],
+      requireInteraction: true,
+      timestamp: Date.now(),
+      data: {
+        dayIndex: data.dayIndex,
+        taskStart: data.task.start,
+        taskTitle: data.task.task,
+      },
+    });
+    
+  } catch (err) {
+    console.error("❌ handleUpcomingTask error:", err);
   }
 }
 
-// 🔔 จัดการเมื่อคลิกที่แจ้งเตือน
+// จัดการเมื่อผู้ใช้คลิก notification
 self.addEventListener("notificationclick", (event) => {
-  console.log("🔔 Notification clicked:", event.notification.title);
+  console.log("🔔 Notification clicked:", event.notification && event.notification.title);
   event.notification.close();
   
   event.waitUntil(
     clients
     .matchAll({ type: "window", includeUncontrolled: true })
     .then((clientList) => {
-      for (let i = 0; i < clientList.length; i++) {
-        const client = clientList[i];
-        if (client.url === "/" && "focus" in client) {
-          return client.focus();
+      for (const client of clientList) {
+        if (client.url && new URL(client.url).pathname === "/") {
+          if ("focus" in client) return client.focus();
         }
       }
-      if (clients.openWindow) {
-        return clients.openWindow("/");
-      }
+      if (clients.openWindow) return clients.openWindow("/");
     })
   );
 });
 
-// ❌ จัดการเมื่อปิดแจ้งเตือน
 self.addEventListener("notificationclose", (event) => {
-  console.log("❌ Notification closed:", event.notification.title);
+  console.log("❌ Notification closed:", event.notification && event.notification.title);
+});
+
+// Support for one-off sync events
+self.addEventListener("sync", (event) => {
+  console.log("📡 SW 'sync' event:", event.tag);
+  if (event.tag === "notify-tasks") {
+    event.waitUntil(checkAndNotify());
+  }
+});
+
+// Support for periodic sync (Chrome impl uses 'periodicsync' event)
+self.addEventListener("periodicsync", (event) => {
+  console.log("📅 SW 'periodicsync' event:", event.tag);
+  if (event.tag === "check-tasks") {
+    event.waitUntil(checkAndNotify());
+  }
 });
