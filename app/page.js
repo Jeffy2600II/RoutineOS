@@ -20,6 +20,7 @@ export default function Home() {
   const [currentTime, setCurrentTime] = useState(new Date()); // เวลาปัจจุบัน (Real-time)
   const [nextTaskInfo, setNextTaskInfo] = useState(null);
   const [notifiedTasks, setNotifiedTasks] = useState(new Set()); // ป้องกันแจ้งเตือนซ้ำ
+  const [bgSyncEnabled, setBgSyncEnabled] = useState(false); // สถานะ Background Sync
 
   const days = [
     { key: "sunday", label: "อาทิตย์" },
@@ -39,7 +40,7 @@ export default function Home() {
     fetchSchedule().then(setSchedule);
   }, []);
 
-  // ลงทะเบียน Service Worker
+  // ลงทะเบียน Service Worker พร้อม Background Sync
   useEffect(() => {
     if (canUseNotificationAPI() && "serviceWorker" in navigator) {
       navigator.serviceWorker
@@ -47,8 +48,33 @@ export default function Home() {
         .then((reg) => {
           console.log("✅ Service Worker registered:", reg);
           setRegistration(reg);
+
+          // ✨ ลงทะเบียน Periodic Background Sync (ทุก 15 นาที)
+          if ("periodicSync" in reg) {
+            reg.periodicSync
+              .register("check-tasks", { minInterval: 15 * 60 * 1000 }) // 15 นาที
+              . then(() => {
+                console. log("✅ Periodic Background Sync registered");
+                setBgSyncEnabled(true);
+              })
+              .catch((err) => {
+                console.warn("⚠️ Periodic Sync not available:", err);
+              });
+          }
+
+          // ลงทะเบียน Background Sync (เมื่อคืนเน็ตอัตโนมัติ)
+          if ("sync" in reg) {
+            reg.sync
+              .register("notify-tasks")
+              .then(() => {
+                console.log("✅ Background Sync registered");
+              })
+              .catch((err) => {
+                console.warn("⚠️ Background Sync not available:", err);
+              });
+          }
         })
-        . catch((error) => {
+        .catch((error) => {
           console.error("❌ Service Worker registration failed:", error);
         });
     }
@@ -59,7 +85,7 @@ export default function Home() {
     if (canUseNotificationAPI()) {
       setNotificationStatus(Notification.permission);
       if (Notification.permission === "default") {
-        Notification.requestPermission().then(setNotificationStatus);
+        Notification.requestPermission(). then(setNotificationStatus);
       }
     } else {
       setNotificationStatus("not-supported");
@@ -79,7 +105,7 @@ export default function Home() {
         icon: "/icon-192.png",
         vibrate: [200, 100, 200],
         requireInteraction: true,
-        ... options,
+        ...options,
       });
       console.log(`✅ Notification sent: ${title}`);
     } catch (err) {
@@ -95,30 +121,30 @@ export default function Home() {
 
   // ฟังก์ชัน: ติดตามและแจ้งเตือนแบบเรียลไทม์
   const checkAndNotifyTasks = () => {
-    const tasks = schedule[days[todayIndex]?. key] || [];
+    const tasks = schedule[days[todayIndex]?.key] || [];
     const now = new Date();
     const currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
 
     tasks.forEach((task, index) => {
-      const taskStartSeconds = timeToSeconds(task. start);
+      const taskStartSeconds = timeToSeconds(task.start);
       const taskId = `${todayIndex}-${task.start}-${task.task}`; // สร้าง unique ID สำหรับงาน
 
       // ตรวจสอบว่าถึงเวลาเริ่มงาน (ภายใน 0-59 วินาทีของนาทีแรก)
       if (
         currentSeconds >= taskStartSeconds &&
         currentSeconds < taskStartSeconds + 60 &&
-        !notifiedTasks. has(taskId) &&
+        !notifiedTasks.has(taskId) &&
         notificationStatus === "granted"
       ) {
         console.log(`🎯 Task notification triggered: ${task.task} at ${task.start}`);
 
-        sendNotification(`🔔 ถึงเวลาเริ่มกิจวัตร!`, {
+        sendNotification(`🔔 ถึงเวลาเริ่มกิจวัตร! `, {
           body: `${task.start} - ${task.task}\n\n📝 ${task.description}`,
           tag: `task-${task.start}`,
         });
 
         // ป้องกันแจ้งเตือนซ้ำ
-        setNotifiedTasks((prev) => new Set(prev). add(taskId));
+        setNotifiedTasks((prev) => new Set(prev).add(taskId));
 
         // ส่งเสียง (optional)
         playNotificationSound();
@@ -137,7 +163,7 @@ export default function Home() {
       gainNode.connect(audioContext.destination);
 
       oscillator.frequency.value = 800; // ความถี่เสียง
-      oscillator. type = "sine";
+      oscillator.type = "sine";
 
       gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
       gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
@@ -153,7 +179,7 @@ export default function Home() {
   useEffect(() => {
     const interval = setInterval(() => {
       setCurrentTime(new Date());
-    }, 1000); // อัปเดตทุก 1 วินาที (แทนที่เดิมที่ 30 วินาที)
+    }, 1000); // อัปเดตทุก 1 วินาที
 
     return () => clearInterval(interval);
   }, []);
@@ -214,7 +240,7 @@ export default function Home() {
 
   // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน
   async function testNotification() {
-    if (! canUseNotificationAPI()) {
+    if (!canUseNotificationAPI()) {
       alert(
         "เบราว์เซอร์ของคุณไม่รองรับฟีเจอร์การแจ้งเตือน (Notification API)"
       );
@@ -235,7 +261,7 @@ export default function Home() {
       playNotificationSound();
     } else if (Notification.permission === "denied") {
       alert(
-        "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์:\n1. ไปที่ Settings\n2. หา Notifications\n3. อนุญาตให้ RoutineOS ส่งแจ้งเตือน"
+        "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์:\n1. ไปที่ Settings\n2.  หา Notifications\n3. เลือก RoutineOS และเปลี่ยนเป็น Allow"
       );
     } else if (Notification.permission === "default") {
       Notification.requestPermission(). then(async (result) => {
@@ -286,7 +312,7 @@ export default function Home() {
       notificationColor = "#9e9e9e";
       break;
     default:
-      notificationText = "กำลังตรวจสอบ...  ";
+      notificationText = "กำลังตรวจสอบ...";
       notificationColor = "#2196f3";
   }
 
@@ -392,13 +418,13 @@ export default function Home() {
 
       {/* ปุ่มเลือกวัน */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
-        {days. map((d, idx) => (
+        {days.map((d, idx) => (
           <button
             key={d.key}
             onClick={() => setSelectedDayIndex(idx)}
             style={{
               background: idx === selectedDayIndex ? "#2257df" : "#f5f5f5",
-              color: idx === selectedDayIndex ?  "#fff" : "#333",
+              color: idx === selectedDayIndex ? "#fff" : "#333",
               padding: "8px 16px",
               borderRadius: 8,
               border: "none",
@@ -438,7 +464,7 @@ export default function Home() {
 
       {/* รายการกิจวัตร */}
       <div style={{ marginTop: "18px" }}>
-        {selectedTasks.length === 0 ? (
+        {selectedTasks.length === 0 ?  (
           <div
             style={{
               color: "#999",
@@ -549,6 +575,14 @@ export default function Home() {
           {notificationText}
         </div>
 
+        {/* แสดงสถานะ Background Sync */}
+        {bgSyncEnabled && (
+          <div style={{ fontSize: "13px", marginTop: 8, color: "#4caf50", lineHeight: "1.6" }}>
+            ✅ Background Sync เปิดใช้งาน<br />
+            💫 จะตรวจสอบกิจวัตรทุก 15 นาที แม้ปิด app
+          </div>
+        )}
+
         {notificationStatus === "not-supported" && (
           <div style={{ fontSize: "13px", marginTop: 8, color: "#666", lineHeight: "1.6" }}>
             ⚠️ แนะนำให้ใช้:<br />
@@ -563,7 +597,7 @@ export default function Home() {
             🔧 วิธีแก้ไข:<br />
             1. ไปที่ Settings / การตั้งค่า<br />
             2. หา Notifications / การแจ้งเตือน<br />
-            3.  ค้นหา RoutineOS และเปลี่ยนเป็น "Allow"
+            3. ค้นหา RoutineOS และเปลี่ยนเป็น "Allow"
           </div>
         )}
       </div>
@@ -578,6 +612,9 @@ export default function Home() {
         </div>
         <div style={{ marginTop: 8 }}>
           ⭐ งานปัจจุบันจะไฮไลต์เหลืองอัตโนมัติ
+        </div>
+        <div style={{ marginTop: 8 }}>
+          🎯 ระบบจะตรวจสอบเบื้องหลังแม้ปิด app
         </div>
       </div>
     </>
