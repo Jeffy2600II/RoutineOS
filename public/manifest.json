@@ -1,7 +1,7 @@
 {
   "name": "RoutineOS",
   "short_name": "RoutineOS",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
