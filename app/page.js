@@ -8,7 +8,6 @@ async function fetchSchedule() {
 }
 
 function canUseNotificationAPI() {
-  // เช็คว่ามีฟีเจอร์นี้และ constructor
   return typeof window !== "undefined"
     && "Notification" in window
     && typeof Notification === "function";
@@ -16,7 +15,7 @@ function canUseNotificationAPI() {
 
 export default function Home() {
   const [schedule, setSchedule] = useState({});
-  const [notificationStatus, setNotificationStatus] = useState("loading"); // รับค่า: granted/denied/default/not-supported
+  const [notificationStatus, setNotificationStatus] = useState("loading"); // granted/denied/default/not-supported
 
   const days = [
     { key: "sunday", label: "อาทิตย์" },
@@ -35,7 +34,16 @@ export default function Home() {
     fetchSchedule().then(setSchedule);
   }, []);
 
-  // ขอ permission แจ้งเตือนทันทีถ้า supported
+  // ลงทะเบียน service worker ครั้งเดียวบน client-side
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/service-worker.js")
+        .then(reg => console.log("Service Worker registered:", reg))
+        .catch(err => console.error("Service Worker registration failed:", err));
+    }
+  }, []);
+
+  // ขอ permission แจ้งเตือน
   useEffect(() => {
     if (canUseNotificationAPI()) {
       setNotificationStatus(Notification.permission);
@@ -47,7 +55,7 @@ export default function Home() {
     }
   }, []);
 
-  // ตั้ง timer แจ้งเตือนกิจวัตรวันนี้เมื่อ permission OK และ API พร้อม
+  // ตั้ง timer แจ้งเตือน (ใช้ ServiceWorkerRegistration ถ้าได้)
   useEffect(() => {
     if (!canUseNotificationAPI() || notificationStatus !== "granted") return;
     const tasks = schedule[days[todayIndex]?.key] || [];
@@ -59,20 +67,7 @@ export default function Home() {
       const msUntilTask = taskTime.getTime() - now.getTime();
       if (msUntilTask > 0) {
         timers.push(setTimeout(() => {
-          try {
-            const notif = new Notification("ถึงเวลาเริ่มกิจวัตร!", {
-              body: `${t.start} - ${t.task}`,
-              icon: "/icon-192.png"
-            });
-            notif.onerror = (e) => {
-              alert("เกิดข้อผิดพลาดกับ Notification API:\n" + e.message);
-              console.log("[Notification error]", e);
-            }
-          } catch (err) {
-            // fallback
-            alert(`ถึงเวลาเริ่มกิจวัตร!\n${t.start} - ${t.task}\nError: ${err.message}`);
-            console.error("Notification error:", err);
-          }
+          sendNotification(`ถึงเวลาเริ่มกิจวัตร!`, `${t.start} - ${t.task}`);
         }, msUntilTask));
       }
     });
@@ -88,54 +83,52 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [selectedDayIndex]);
 
-  // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน (แก้ไขเพิ่มรายละเอียด error log)
+  // ฟังก์ชั่นรวมสำหรับแจ้งเตือน (ใช้ sw หรือ new Notification ตามโหมด)
+  function sendNotification(title, body) {
+    if ("serviceWorker" in navigator && window.matchMedia('(display-mode: standalone)').matches) {
+      // PWA mode (Add to Home Screen)
+      navigator.serviceWorker.getRegistration().then(reg => {
+        if (reg) {
+          reg.showNotification(title, {
+            body,
+            icon: "/icon-192.png"
+          });
+        } else {
+          alert("ไม่พบ Service Worker สำหรับแจ้งเตือน\n(ต้องลงทะเบียน sw ก่อน)");
+        }
+      });
+    } else {
+      // Desktop browser ทั่วไป
+      try {
+        new Notification(title, {
+          body,
+          icon: "/icon-192.png"
+        });
+      } catch (err) {
+        alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (ดูรายละเอียดใน console)\n" + (err.message || "Unknown error"));
+        console.error("Notification error:", err);
+      }
+    }
+  }
+
+  // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน
   function testNotification() {
     if (!canUseNotificationAPI()) {
       alert("เบราว์เซอร์ของคุณไม่รองรับฟีเจอร์การแจ้งเตือน (Notification API)");
       return;
     }
-
     console.log("Notification.permission:", Notification.permission);
-
     if (Notification.permission === "granted") {
-      try {
-        const notif = new Notification("🎉 ทดสอบแจ้งเตือน!", {
-          body: "นี่คือข้อความทดสอบบน RoutineOS",
-          icon: "/icon-192.png",
-        });
-        notif.onerror = (e) => {
-          alert("เกิดข้อผิดพลาดกับ Notification API:\n" + (e.message || "Unknown error"));
-          console.log("[Notification error]", e);
-        };
-      } catch (err) {
-        alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (ดูรายละเอียดใน console)\n" + (err.message || "Unknown error"));
-        console.error("Notification error:", err);
-      }
+      sendNotification("🎉 ทดสอบแจ้งเตือน!", "นี่คือข้อความทดสอบบน RoutineOS");
     } else if (Notification.permission === "denied") {
-      alert(
-        "คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน\n(ตรวจ Settings > Notifications ของเบราว์เซอร์)"
-      );
+      alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน\n(ตรวจ Settings > Notifications ของเบราว์เซอร์)");
     } else if (Notification.permission === "default") {
-      Notification.requestPermission().then((result) => {
+      Notification.requestPermission().then(result => {
         setNotificationStatus(result);
         if (result === "granted") {
-          try {
-            const notif = new Notification("🎉 ทดสอบแจ้งเตือน!", {
-              body: "นี่คือข้อความทดสอบบน RoutineOS",
-              icon: "/icon-192.png",
-            });
-            notif.onerror = (e) => {
-              alert("เกิดข้อผิดพลาดกับ Notification API:\n" + (e.message || "Unknown error"));
-              console.log("[Notification error]", e);
-            };
-          } catch (err) {
-            alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (ดูรายละเอียดใน console)\n" + (err.message || "Unknown error"));
-            console.error("Notification error:", err);
-          }
+          sendNotification("🎉 ทดสอบแจ้งเตือน!", "นี่คือข้อความทดสอบบน RoutineOS");
         } else if (result === "denied") {
-          alert(
-            "คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน\n(ตรวจ Settings > Notifications ของเบราว์เซอร์)"
-          );
+          alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน\n(ตรวจ Settings > Notifications ของเบราว์เซอร์)");
         } else {
           alert("คุณยังไม่ได้อนุญาตให้แจ้งเตือน");
         }
