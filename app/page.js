@@ -60,13 +60,18 @@ export default function Home() {
       if (msUntilTask > 0) {
         timers.push(setTimeout(() => {
           try {
-            new Notification("ถึงเวลาเริ่มกิจวัตร!", {
+            const notif = new Notification("ถึงเวลาเริ่มกิจวัตร!", {
               body: `${t.start} - ${t.task}`,
               icon: "/icon-192.png"
             });
+            notif.onerror = (e) => {
+              alert("เกิดข้อผิดพลาดกับ Notification API:\n" + e.message);
+              console.log("[Notification error]", e);
+            }
           } catch (err) {
             // fallback
-            alert(`ถึงเวลาเริ่มกิจวัตร!\n${t.start} - ${t.task}`);
+            alert(`ถึงเวลาเริ่มกิจวัตร!\n${t.start} - ${t.task}\nError: ${err.message}`);
+            console.error("Notification error:", err);
           }
         }, msUntilTask));
       }
@@ -83,41 +88,58 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [selectedDayIndex]);
 
-  // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน
+  // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน (แก้ไขเพิ่มรายละเอียด error log)
   function testNotification() {
-    if (canUseNotificationAPI()) {
-      if (Notification.permission === "granted") {
-        try {
-          new Notification("🎉 ทดสอบแจ้งเตือน!", {
-            body: "นี่คือข้อความทดสอบบน RoutineOS",
-            icon: "/icon-192.png"
-          });
-        } catch (err) {
-          alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (อาจไม่รองรับ)\n\nนี่คือข้อความทดสอบบน RoutineOS");
-        }
-      } else if (Notification.permission === "denied") {
-        alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งานฟีเจอร์นี้");
-      } else {
-        Notification.requestPermission().then(result => {
-          setNotificationStatus(result);
-          if (result === "granted") {
-            try {
-              new Notification("🎉 ทดสอบแจ้งเตือน!", {
-                body: "นี่คือข้อความทดสอบบน RoutineOS",
-                icon: "/icon-192.png"
-              });
-            } catch (err) {
-              alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (อาจไม่รองรับ)\n\nนี่คือข้อความทดสอบบน RoutineOS");
-            }
-          } else if (result === "denied") {
-            alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งานฟีเจอร์นี้");
-          } else {
-            alert("คุณยังไม่ได้อนุญาตให้แจ้งเตือน");
-          }
-        });
-      }
-    } else {
+    if (!canUseNotificationAPI()) {
       alert("เบราว์เซอร์ของคุณไม่รองรับฟีเจอร์การแจ้งเตือน (Notification API)");
+      return;
+    }
+
+    console.log("Notification.permission:", Notification.permission);
+
+    if (Notification.permission === "granted") {
+      try {
+        const notif = new Notification("🎉 ทดสอบแจ้งเตือน!", {
+          body: "นี่คือข้อความทดสอบบน RoutineOS",
+          icon: "/icon-192.png",
+        });
+        notif.onerror = (e) => {
+          alert("เกิดข้อผิดพลาดกับ Notification API:\n" + (e.message || "Unknown error"));
+          console.log("[Notification error]", e);
+        };
+      } catch (err) {
+        alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (ดูรายละเอียดใน console)\n" + (err.message || "Unknown error"));
+        console.error("Notification error:", err);
+      }
+    } else if (Notification.permission === "denied") {
+      alert(
+        "คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน\n(ตรวจ Settings > Notifications ของเบราว์เซอร์)"
+      );
+    } else if (Notification.permission === "default") {
+      Notification.requestPermission().then((result) => {
+        setNotificationStatus(result);
+        if (result === "granted") {
+          try {
+            const notif = new Notification("🎉 ทดสอบแจ้งเตือน!", {
+              body: "นี่คือข้อความทดสอบบน RoutineOS",
+              icon: "/icon-192.png",
+            });
+            notif.onerror = (e) => {
+              alert("เกิดข้อผิดพลาดกับ Notification API:\n" + (e.message || "Unknown error"));
+              console.log("[Notification error]", e);
+            };
+          } catch (err) {
+            alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (ดูรายละเอียดใน console)\n" + (err.message || "Unknown error"));
+            console.error("Notification error:", err);
+          }
+        } else if (result === "denied") {
+          alert(
+            "คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน\n(ตรวจ Settings > Notifications ของเบราว์เซอร์)"
+          );
+        } else {
+          alert("คุณยังไม่ได้อนุญาตให้แจ้งเตือน");
+        }
+      });
     }
   }
 
@@ -216,7 +238,7 @@ export default function Home() {
       <div style={{ marginTop:16,color:"#888",fontSize:"15px" }}>
         แจ้งเตือน: <strong>{notificationText}</strong>
         {notificationStatus === "not-supported" 
-          ? <div style={{color:"#e23"}}>แนะนำให้เปิดผ่าน Chrome/Firefox/Edge บน Android, หรือ Safari (iOS 16.4 ขึ้นไป) และ "เพิ่มเป็นแอพ" เพื่อใช้งานแจ้งเตือนขั้นสูง</div>
+          ? <div style={{color:"#e23"}}>แนะนำให้เปิดผ่าน Chrome/Firefox/Edge บน Android, หรือ Safari (iOS 16.4 ขึ้นไป) และ "เพิ่มไปที่หน้าแรก"</div>
           : null}
       </div>
     </>
