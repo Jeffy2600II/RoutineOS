@@ -1,42 +1,107 @@
-const CACHE_NAME = "routineos-v1";
-const CACHE_URLS = ["/", "/api/schedule", "/manifest.json"];
+const CACHE_NAME = "routineos-v2";
 
-// ✅ ติดตั้ง Service Worker
 self.addEventListener("install", (event) => {
   console.log("✅ Service Worker installed");
   self.skipWaiting();
-  
-  // แคชไฟล์สำคัญ
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(CACHE_URLS).catch((err) => {
-        console.warn("⚠️ Cache failed:", err);
-      });
-    })
-  );
 });
 
-// ✅ เปิดใช้งาน Service Worker
 self.addEventListener("activate", (event) => {
   console.log("✅ Service Worker activated");
   self.clients.claim();
+  
+  // ✨ เริ่มตรวจสอบเมื่อ activate
+  event.waitUntil(startRealtimeMonitoring());
 });
 
-// 🎯 Periodic Background Sync - ตรวจสอบกิจวัตรทุก 15 นาที
-self.addEventListener("periodicsync", (event) => {
-  if (event.tag === "check-tasks") {
-    console.log("🔔 Periodic Sync triggered - checking tasks");
-    event.waitUntil(checkAndNotifyTasks());
+// 🎯 Real-Time Monitoring - ตรวจสอบกิจวัตรแบบ Real-Time
+async function startRealtimeMonitoring() {
+  try {
+    console.log("🚀 Starting Real-Time monitoring...");
+    
+    // ✅ เชื่อมต่อ SSE
+    const response = await fetch("/api/notifications/subscribe");
+    
+    if (!response.body) {
+      console.warn("⚠️ SSE not supported, falling back to polling");
+      return startPolling();
+    }
+    
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        console.log("🔌 SSE connection closed");
+        // ✅ Reconnect เมื่อ disconnect
+        setTimeout(() => startRealtimeMonitoring(), 3000);
+        break;
+      }
+      
+      const text = decoder.decode(value);
+      const lines = text.split("\n");
+      
+      for (let line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            
+            if (data.type === "upcoming-task") {
+              console.log("🔔 Real-time notification received:", data.task);
+              
+              // ✅ ส่ง notification
+              await self.registration.showNotification(
+                `🔔 ถึงเวลาเริ่มกิจวัตร! `,
+                {
+                  body: `${data.task.start} - ${data.task.task}\n\n📝 ${data.task.description}`,
+                  tag: `task-${data.task.start}`,
+                  badge: "/icon-192.png",
+                  icon: "/icon-192.png",
+                  vibrate: [200, 100, 200],
+                  requireInteraction: true,
+                  timestamp: Date.now(),
+                }
+              );
+            }
+          } catch (err) {
+            // ข้าม line ว่าง
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("❌ Real-time monitoring error:", err);
+    // Fallback ไป polling
+    startPolling();
   }
-});
+}
 
-// 📡 Background Sync - ส่งแจ้งเตือนเมื่อคืนเน็ต
-self.addEventListener("sync", (event) => {
-  if (event.tag === "notify-tasks") {
-    console.log("📡 Background Sync triggered");
-    event.waitUntil(checkAndNotifyTasks());
+// 🔄 Fallback: Polling ทุก 5 นาที (ถ้า SSE ไม่ได้ผล)
+async function startPolling() {
+  console.log("📡 Starting polling mode (fallback)...");
+  
+  while (true) {
+    try {
+      const now = new Date();
+      const dayIndex = now.getDay();
+      
+      // ✅ POST เพื่อให้ server ส่ง notification
+      await fetch("/api/notifications/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dayIndex }),
+      });
+      
+      console.log("📡 Polling check completed");
+    } catch (err) {
+      console.error("❌ Polling error:", err);
+    }
+    
+    // ✅ รอ 5 นาที ก่อนเช็คครั้งถัดไป
+    await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
   }
-});
+}
 
 // 🔔 จัดการเมื่อคลิกที่แจ้งเตือน
 self.addEventListener("notificationclick", (event) => {
@@ -44,15 +109,15 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   
   event.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
-      // หากมี tab ที่เปิด app อยู่ให้ focus
+    clients
+    .matchAll({ type: "window", includeUncontrolled: true })
+    .then((clientList) => {
       for (let i = 0; i < clientList.length; i++) {
         const client = clientList[i];
         if (client.url === "/" && "focus" in client) {
           return client.focus();
         }
       }
-      // หากไม่มี tab ให้เปิด app ใหม่
       if (clients.openWindow) {
         return clients.openWindow("/");
       }
@@ -64,128 +129,3 @@ self.addEventListener("notificationclick", (event) => {
 self.addEventListener("notificationclose", (event) => {
   console.log("❌ Notification closed:", event.notification.title);
 });
-
-// 💾 Cache-first strategy สำหรับ API
-self.addEventListener("fetch", (event) => {
-  // ดึงข้อมูล schedule จากแคช ก่อน แล้วจึง update
-  if (event.request.url.includes("/api/schedule")) {
-    event.respondWith(
-      caches.open(CACHE_NAME).then((cache) => {
-        return cache.match(event.request).then((response) => {
-          const fetchPromise = fetch(event.request).then((networkResponse) => {
-            if (networkResponse && networkResponse.status === 200) {
-              cache.put(event.request, networkResponse.clone());
-            }
-            return networkResponse;
-          });
-          return response || fetchPromise;
-        });
-      })
-    );
-  }
-});
-
-// 🎯 ฟังก์ชันหลัก: ตรวจสอบและแจ้งเตือนกิจวัตร
-async function checkAndNotifyTasks() {
-  try {
-    // ดึงข้อมูลกิจวัตร
-    const res = await fetch("/api/schedule");
-    const schedule = await res.json();
-    
-    // หาวันปัจจุบัน
-    const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-    const todayIndex = new Date().getDay();
-    const todayKey = days[todayIndex];
-    
-    // ได้ระเบียบวันนี้
-    const todayTasks = schedule[todayKey] || [];
-    const now = new Date();
-    const currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-    
-    // ตรวจสอบแต่ละงาน
-    for (let task of todayTasks) {
-      const taskStartSeconds = timeToSeconds(task.start);
-      
-      // ถ้าถึงเวลาเริ่มงาน และยังไม่เคยแจ้งเตือน
-      if (
-        currentSeconds >= taskStartSeconds &&
-        currentSeconds < taskStartSeconds + 120 // ช่วง 2 นาที
-      ) {
-        // เช็คว่าเคยส่งแจ้งเตือนไปแล้วหรือไม่
-        const notificationId = `${todayIndex}-${task.start}`;
-        const storedNotifications = await getStoredNotifications();
-        
-        if (!storedNotifications.includes(notificationId)) {
-          // ส่งแจ้งเตือน
-          await self.registration.showNotification(`🔔 ถึงเวลาเริ่มกิจวัตร! `, {
-            body: `${task.start} - ${task.task}\n\n📝 ${task.description}`,
-            tag: `task-${task.start}`,
-            badge: "/icon-192.png",
-            icon: "/icon-192.png",
-            vibrate: [200, 100, 200],
-            requireInteraction: true,
-          });
-          
-          console.log(`✅ Background notification sent: ${task.task}`);
-          
-          // บันทึกว่าเคยส่งแจ้งเตือนแล้ว
-          storedNotifications.push(notificationId);
-          await saveStoredNotifications(storedNotifications);
-        }
-      }
-    }
-  } catch (err) {
-    console.error("❌ Error in checkAndNotifyTasks:", err);
-  }
-}
-
-// 🕐 แปลงเวลา HH:MM เป็นวินาที
-function timeToSeconds(timeStr) {
-  const [h, m] = timeStr.split(":").map(Number);
-  return h * 3600 + m * 60;
-}
-
-// 💾 บันทึกแจ้งเตือนที่ส่งไปแล้ว
-async function getStoredNotifications() {
-  try {
-    const db = await openIndexedDB();
-    const tx = db.transaction("notifications", "readonly");
-    const store = tx.objectStore("notifications");
-    const result = await new Promise((resolve, reject) => {
-      const request = store.get("sent");
-      request.onsuccess = () => resolve(request.result?.data || []);
-      request.onerror = reject;
-    });
-    return result;
-  } catch {
-    return [];
-  }
-}
-
-async function saveStoredNotifications(notifications) {
-  try {
-    const db = await openIndexedDB();
-    const tx = db.transaction("notifications", "readwrite");
-    const store = tx.objectStore("notifications");
-    store.put({ id: "sent", data: notifications });
-  } catch (err) {
-    console.warn("⚠️ Could not save to IndexedDB:", err);
-  }
-}
-
-// 💾 เปิด IndexedDB
-function openIndexedDB() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("RoutineOS", 1);
-    
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains("notifications")) {
-        db.createObjectStore("notifications", { keyPath: "id" });
-      }
-    };
-    
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = reject;
-  });
-}
