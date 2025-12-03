@@ -10,12 +10,13 @@ async function fetchSchedule() {
 function canUseNotificationAPI() {
   return typeof window !== "undefined"
     && "Notification" in window
-    && typeof Notification === "function";
+    && "serviceWorker" in navigator;
 }
 
 export default function Home() {
   const [schedule, setSchedule] = useState({});
-  const [notificationStatus, setNotificationStatus] = useState("loading"); // granted/denied/default/not-supported
+  const [notificationStatus, setNotificationStatus] = useState("loading");
+  const [swRegistered, setSwRegistered] = useState(false);
 
   const days = [
     { key: "sunday", label: "อาทิตย์" },
@@ -34,45 +35,63 @@ export default function Home() {
     fetchSchedule().then(setSchedule);
   }, []);
 
-  // ลงทะเบียน service worker ครั้งเดียวบน client-side
+  // ลงทะเบียน Service Worker ก่อนทำอะไร
   useEffect(() => {
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/service-worker.js")
-        .then(reg => console.log("Service Worker registered:", reg))
-        .catch(err => console.error("Service Worker registration failed:", err));
+      navigator.serviceWorker
+        .register("/service-worker. js")
+        .then(reg => {
+          console.log("✅ Service Worker registered successfully:", reg);
+          setSwRegistered(true);
+        })
+        .catch(err => {
+          console.error("❌ Service Worker registration failed:", err);
+          setSwRegistered(false);
+        });
+    } else {
+      console.warn("⚠️ Service Worker not supported in this browser");
     }
   }, []);
 
   // ขอ permission แจ้งเตือน
   useEffect(() => {
-    if (canUseNotificationAPI()) {
+    if (canUseNotificationAPI() && swRegistered) {
       setNotificationStatus(Notification.permission);
       if (Notification.permission === "default") {
-        Notification.requestPermission().then(setNotificationStatus);
+        Notification.requestPermission(). then(permission => {
+          setNotificationStatus(permission);
+          console.log("Notification permission:", permission);
+        });
       }
     } else {
       setNotificationStatus("not-supported");
     }
-  }, []);
+  }, [swRegistered]);
 
-  // ตั้ง timer แจ้งเตือน (ใช้ ServiceWorkerRegistration ถ้าได้)
+  // ตั้ง timer แจ้งเตือน (ใช้ SW เท่านั้น)
   useEffect(() => {
-    if (!canUseNotificationAPI() || notificationStatus !== "granted") return;
+    if (! swRegistered || notificationStatus !== "granted") return;
+
     const tasks = schedule[days[todayIndex]?.key] || [];
     const timers = [];
+
     tasks.forEach(t => {
       const [h, m] = t.start.split(":").map(Number);
       const now = new Date();
       const taskTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
-      const msUntilTask = taskTime.getTime() - now.getTime();
+      const msUntilTask = taskTime. getTime() - now.getTime();
+
       if (msUntilTask > 0) {
-        timers.push(setTimeout(() => {
-          sendNotification(`ถึงเวลาเริ่มกิจวัตร!`, `${t.start} - ${t.task}`);
-        }, msUntilTask));
+        timers.push(
+          setTimeout(() => {
+            showNotificationViaServiceWorker(`ถึงเวลาเริ่มกิจวัตร! `, `${t.start} - ${t.task}`);
+          }, msUntilTask)
+        );
       }
     });
+
     return () => timers.forEach(clearTimeout);
-  }, [schedule, todayIndex, notificationStatus]);
+  }, [schedule, todayIndex, notificationStatus, swRegistered]);
 
   // sync วันอัตโนมัติ
   useEffect(() => {
@@ -83,98 +102,132 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [selectedDayIndex]);
 
-  // ฟังก์ชั่นรวมสำหรับแจ้งเตือน (ใช้ sw หรือ new Notification ตามโหมด)
-  function sendNotification(title, body) {
-    if ("serviceWorker" in navigator && window.matchMedia('(display-mode: standalone)').matches) {
-      // PWA mode (Add to Home Screen)
-      navigator.serviceWorker.getRegistration().then(reg => {
-        if (reg) {
-          reg.showNotification(title, {
-            body,
-            icon: "/icon-192.png"
-          });
-        } else {
-          alert("ไม่พบ Service Worker สำหรับแจ้งเตือน\n(ต้องลงทะเบียน sw ก่อน)");
-        }
-      });
-    } else {
-      // Desktop browser ทั่วไป
-      try {
-        new Notification(title, {
-          body,
-          icon: "/icon-192.png"
-        });
-      } catch (err) {
-        alert("แจ้งเตือนแบบ Notification ไม่สำเร็จ (ดูรายละเอียดใน console)\n" + (err.message || "Unknown error"));
-        console.error("Notification error:", err);
-      }
-    }
-  }
-
-  // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน
-  function testNotification() {
-    if (!canUseNotificationAPI()) {
-      alert("เบราว์เซอร์ของคุณไม่รองรับฟีเจอร์การแจ้งเตือน (Notification API)");
+  // ฟังก์ชั่นแจ้งเตือนผ่าน Service Worker (วิธีถูกต้องเท่านั้น)
+  function showNotificationViaServiceWorker(title, body) {
+    if (!swRegistered) {
+      alert("Service Worker ยังไม่ได้ลงทะเบียน");
       return;
     }
-    console.log("Notification.permission:", Notification.permission);
+
+    navigator.serviceWorker.getRegistration(). then(reg => {
+      if (reg) {
+        reg.showNotification(title, {
+          body: body,
+          icon: "/icon-192.png",
+          badge: "/icon-192.png",
+          tag: "routineos-notification",
+          requireInteraction: false,
+        });
+      } else {
+        alert("ไม่พบ Service Worker ที่ลงทะเบียน");
+      }
+    }). catch(err => {
+      console.error("Error showing notification:", err);
+      alert("เกิดข้อผิดพลาดในการแจ้งเตือน:\n" + err.message);
+    });
+  }
+
+  // ฟังก์ชั่นปุ่มทดสอบแจ้งเตือน (ใช้ SW เท่านั้น)
+  function testNotification() {
+    if (! canUseNotificationAPI()) {
+      alert("❌ เบราว์เซอร์ของคุณไม่รองรับฟีเจอร์การแจ้งเตือน (ต้องมี Service Worker)");
+      return;
+    }
+
+    if (! swRegistered) {
+      alert("⏳ Service Worker ยังไม่ได้ลงทะเบียน กรุณารอสักครู่แล้วลองใหม่");
+      return;
+    }
+
+    console.log("📢 Test notification - Permission:", Notification.permission);
+
     if (Notification.permission === "granted") {
-      sendNotification("🎉 ทดสอบแจ้งเตือน!", "นี่คือข้อความทดสอบบน RoutineOS");
+      showNotificationViaServiceWorker("🎉 ทดสอบแจ้งเตือน!", "นี่คือข้อความทดสอบบน RoutineOS");
     } else if (Notification.permission === "denied") {
-      alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน\n(ตรวจ Settings > Notifications ของเบราว์เซอร์)");
+      alert(
+        "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน:\n" +
+        "• Android: Settings > Notifications > RoutineOS\n" +
+        "• iOS: Settings > RoutineOS > Notifications"
+      );
     } else if (Notification.permission === "default") {
       Notification.requestPermission().then(result => {
         setNotificationStatus(result);
         if (result === "granted") {
-          sendNotification("🎉 ทดสอบแจ้งเตือน!", "นี่คือข้อความทดสอบบน RoutineOS");
+          showNotificationViaServiceWorker("🎉 ทดสอบแจ้งเตือน!", "นี่คือข้อความทดสอบบน RoutineOS");
         } else if (result === "denied") {
-          alert("คุณได้ปฏิเสธสิทธิ์แจ้งเตือน กรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน\n(ตรวจ Settings > Notifications ของเบราว์เซอร์)");
-        } else {
-          alert("คุณยังไม่ได้อนุญาตให้แจ้งเตือน");
+          alert(
+            "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์ก่อนใช้งาน:\n" +
+            "• Android: Settings > Notifications > RoutineOS\n" +
+            "• iOS: Settings > RoutineOS > Notifications"
+          );
         }
       });
     }
   }
 
   const selectedDay = days[selectedDayIndex] || days[todayIndex];
-  const selectedTasks = schedule[selectedDay.key] || [];
+  const selectedTasks = schedule[selectedDay. key] || [];
 
   let notificationText = "";
+  let notificationColor = "#888";
+
   switch (notificationStatus) {
-    case "granted": notificationText = "เปิดใช้งานแล้ว ✅"; break;
-    case "denied": notificationText = "คุณไม่อนุญาตแจ้งเตือน ❌"; break;
-    case "default": notificationText = "ยังไม่ได้อนุญาต 🟡"; break;
-    case "not-supported": notificationText = "เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน"; break;
-    default: notificationText = "กำลังตรวจสอบ...";
+    case "granted":
+      notificationText = "เปิดใช้งานแล้ว ✅";
+      notificationColor = "#2a2";
+      break;
+    case "denied":
+      notificationText = "คุณไม่อนุญาตแจ้งเตือน ❌";
+      notificationColor = "#e23";
+      break;
+    case "default":
+      notificationText = "ยังไม่ได้อนุญาต 🟡";
+      notificationColor = "#f80";
+      break;
+    case "not-supported":
+      notificationText = "เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน";
+      notificationColor = "#e23";
+      break;
+    default:
+      notificationText = "กำลังตรวจสอบ... ";
   }
 
   return (
     <>
       <h1>📅 กิจวัตรประจำวัน</h1>
+
+      {/* สถานะ Service Worker */}
+      <div style={{ marginBottom: 16, padding: "10px", background: swRegistered ? "#e8f5e9" : "#fff3cd", borderRadius: 8, fontSize: "14px", color: swRegistered ? "#2a2" : "#f80" }}>
+        <strong>Service Worker: {swRegistered ? "✅ ลงทะเบียนสำเร็จ" : "⏳ กำลังลงทะเบียน..."}</strong>
+      </div>
+
       {/* ปุ่มทดสอบแจ้งเตือน */}
       <button
         onClick={testNotification}
+        disabled={!swRegistered}
         style={{
           marginBottom: 16,
           padding: "8px 24px",
           borderRadius: 8,
-          background: "#5fdb5f",
+          background: swRegistered ? "#5fdb5f" : "#ccc",
           color: "#232",
           border: "none",
           fontWeight: "bold",
-          cursor: "pointer"
+          cursor: swRegistered ? "pointer" : "not-allowed",
+          opacity: swRegistered ? 1 : 0.6
         }}
       >
         ทดสอบแจ้งเตือน
       </button>
+
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
-        {days.map((d, idx) => (
+        {days. map((d, idx) => (
           <button
             key={d.key}
             onClick={() => setSelectedDayIndex(idx)}
             style={{
               background: idx === selectedDayIndex ? "#2257df" : "#f5f5f5",
-              color: idx === selectedDayIndex ? "#fff" : "#333",
+              color: idx === selectedDayIndex ?  "#fff" : "#333",
               padding: "6px 18px",
               borderRadius: 8,
               border: "none",
@@ -183,7 +236,7 @@ export default function Home() {
               boxShadow: idx === selectedDayIndex ? "0 2px 10px #ccd" : "none"
             }}
           >
-            {d.label}
+            {d. label}
           </button>
         ))}
         <button
@@ -202,9 +255,11 @@ export default function Home() {
           Sync (กลับสู่วันนี้)
         </button>
       </div>
+
       <h2 style={{ marginTop: "-10px", color: "#666" }}>
         กิจวัตรประจำวัน "{selectedDay.label}"
       </h2>
+
       <div style={{ marginTop: "18px" }}>
         {selectedTasks.length === 0 ? (
           <div style={{ color: "#999" }}>ไม่มีข้อมูลกิจวัตรวันนี้</div>
@@ -222,17 +277,27 @@ export default function Home() {
                 gap: "16px"
               }}
             >
-              <div style={{ fontWeight: "bold", minWidth: 85 }}>{t.start} – {t.end}</div>
+              <div style={{ fontWeight: "bold", minWidth: 85 }}>
+                {t. start} – {t.end}
+              </div>
               <div>{t.task}</div>
             </div>
           ))
         )}
       </div>
-      <div style={{ marginTop:16,color:"#888",fontSize:"15px" }}>
-        แจ้งเตือน: <strong>{notificationText}</strong>
-        {notificationStatus === "not-supported" 
-          ? <div style={{color:"#e23"}}>แนะนำให้เปิดผ่าน Chrome/Firefox/Edge บน Android, หรือ Safari (iOS 16.4 ขึ้นไป) และ "เพิ่มไปที่หน้าแรก"</div>
-          : null}
+
+      <div style={{ marginTop: 16, color: notificationColor, fontSize: "15px", padding: "12px", background: "#f5f5f5", borderRadius: 8 }}>
+        <strong>สถานะแจ้งเตือน:</strong> {notificationText}
+        {notificationStatus === "not-supported" && (
+          <div style={{ color: "#e23", marginTop: 8 }}>
+            ⚠️ แนะนำให้ใช้ Chrome/Firefox/Edge บน Android หรือ Safari (iOS 16. 4 ขึ้นไป) และ "เพิ่มไปที่หน้าแรก"
+          </div>
+        )}
+        {! swRegistered && (
+          <div style={{ color: "#f80", marginTop: 8 }}>
+            ⏳ Service Worker กำลังลงทะเบียน กรุณารอสักครู่... 
+          </div>
+        )}
       </div>
     </>
   );
