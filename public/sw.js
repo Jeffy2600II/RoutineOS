@@ -1,3 +1,5 @@
+// Service Worker (ปรับใหม่ให้รองรับ Push API และยังเก็บ fallback เดิมไว้บางส่วน)
+// ใช้ push event เป็นหลักในการแสดง Notification
 const CACHE_NAME = "routineos-v2";
 
 self.addEventListener("install", (event) => {
@@ -8,116 +10,43 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   console.log("✅ Service Worker activated");
   self.clients.claim();
-  
-  // ✨ เริ่มตรวจสอบเมื่อ activate
-  event.waitUntil(startRealtimeMonitoring());
 });
 
-// 🎯 Real-Time Monitoring - ตรวจสอบกิจวัตรแบบ Real-Time
-async function startRealtimeMonitoring() {
+self.addEventListener("push", (event) => {
   try {
-    console.log("🚀 Starting Real-Time monitoring...");
+    const payload = event.data ? event.data.json() : { title: "🔔 RoutineOS", body: "ถึงเวลาแล้ว" };
+    const title = payload.title || "🔔 RoutineOS";
+    const options = {
+      body: payload.body || "",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      requireInteraction: payload.requireInteraction ?? true,
+      data: payload.data || {},
+      timestamp: payload.timestamp || Date.now(),
+      vibrate: payload.vibrate || [200, 100, 200],
+      tag: payload.tag || undefined,
+    };
     
-    // ✅ เชื่อมต่อ SSE
-    const response = await fetch("/api/notifications/subscribe");
-    
-    if (!response.body) {
-      console.warn("⚠️ SSE not supported, falling back to polling");
-      return startPolling();
-    }
-    
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    
-    while (true) {
-      const { done, value } = await reader.read();
-      
-      if (done) {
-        console.log("🔌 SSE connection closed");
-        // ✅ Reconnect เมื่อ disconnect
-        setTimeout(() => startRealtimeMonitoring(), 3000);
-        break;
-      }
-      
-      const text = decoder.decode(value);
-      const lines = text.split("\n");
-      
-      for (let line of lines) {
-        if (line.startsWith("data: ")) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            
-            if (data.type === "upcoming-task") {
-              console.log("🔔 Real-time notification received:", data.task);
-              
-              // ✅ ส่ง notification
-              await self.registration.showNotification(
-                `🔔 ถึงเวลาเริ่มกิจวัตร! `,
-                {
-                  body: `${data.task.start} - ${data.task.task}\n\n📝 ${data.task.description}`,
-                  tag: `task-${data.task.start}`,
-                  badge: "/icon-192.png",
-                  icon: "/icon-192.png",
-                  vibrate: [200, 100, 200],
-                  requireInteraction: true,
-                  timestamp: Date.now(),
-                }
-              );
-            }
-          } catch (err) {
-            // ข้าม line ว่าง
-          }
-        }
-      }
-    }
+    event.waitUntil(self.registration.showNotification(title, options));
   } catch (err) {
-    console.error("❌ Real-time monitoring error:", err);
-    // Fallback ไป polling
-    startPolling();
+    console.error("❌ SW push handler error:", err);
   }
-}
+});
 
-// 🔄 Fallback: Polling ทุก 5 นาที (ถ้า SSE ไม่ได้ผล)
-async function startPolling() {
-  console.log("📡 Starting polling mode (fallback)...");
-  
-  while (true) {
-    try {
-      const now = new Date();
-      const dayIndex = now.getDay();
-      
-      // ✅ POST เพื่อให้ server ส่ง notification
-      await fetch("/api/notifications/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dayIndex }),
-      });
-      
-      console.log("📡 Polling check completed");
-    } catch (err) {
-      console.error("❌ Polling error:", err);
-    }
-    
-    // ✅ รอ 5 นาที ก่อนเช็คครั้งถัดไป
-    await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
-  }
-}
-
-// 🔔 จัดการเมื่อคลิกที่แจ้งเตือน
+// เมื่อผู้ใช้คลิกที่ Notification
 self.addEventListener("notificationclick", (event) => {
-  console.log("🔔 Notification clicked:", event.notification.title);
+  console.log("🔔 Notification clicked:", event.notification && event.notification.title);
   event.notification.close();
   
   event.waitUntil(
-    clients
-    .matchAll({ type: "window", includeUncontrolled: true })
-    .then((clientList) => {
-      for (let i = 0; i < clientList.length; i++) {
-        const client = clientList[i];
-        if (client.url === "/" && "focus" in client) {
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      // หากมีหน้าต่างเปิดอยู่แล้ว ให้ focus หน้าต่างแรกที่ path เป็น '/'
+      for (let client of clientList) {
+        if (client.url && new URL(client.url).pathname === "/" && "focus" in client) {
           return client.focus();
         }
       }
+      // ถ้าไม่มี ให้เปิดหน้าต่างใหม่
       if (clients.openWindow) {
         return clients.openWindow("/");
       }
@@ -125,7 +54,54 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
-// ❌ จัดการเมื่อปิดแจ้งเตือน
-self.addEventListener("notificationclose", (event) => {
-  console.log("❌ Notification closed:", event.notification.title);
+// หาก subscription เปลี่ยน (เช่น expired) → แจ้ง client ให้ re-subscribe
+self.addEventListener("pushsubscriptionchange", (event) => {
+  console.log("🔁 pushsubscriptionchange event", event);
+  event.waitUntil(
+    (async () => {
+      try {
+        const reg = await self.registration.pushManager.getSubscription();
+        // แจ้ง client ให้ re-subscribe (client จะรับ message และทำ subscribe ใหม่)
+        const allClients = await clients.matchAll({ includeUncontrolled: true });
+        for (const client of allClients) {
+          client.postMessage({ type: "subscription-changed" });
+        }
+        // ถ้าไม่มี subscription ให้พยายาม re-subscribe (ขึ้นอยู่กับ browser policy)
+        if (!reg) {
+          // we intentionally don't auto-subscribe here without user's action
+          console.log("No active subscription after change.");
+        }
+      } catch (err) {
+        console.error("❌ Error handling subscription change:", err);
+      }
+    })()
+  );
+});
+
+// Fallback: เก็บโค้ดเดิมบางส่วน (polling) แต่ใน SW background lifetime จำกัดมาก
+// ถ้าต้องการ polling จริงจัง ควรใช้ server-side cron หรือ periodic background sync (ถ้ารองรับ)
+async function tryPollingOnce(dayIndex) {
+  try {
+    await fetch("/api/notifications/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dayIndex }),
+    });
+    console.log("📡 Polling check done");
+  } catch (err) {
+    console.error("❌ Polling attempt failed:", err);
+  }
+}
+
+// รับข้อความจากหน้า client (เช่น สั่งให้ polling หรือบอกว่า subscription เปลี่ยน)
+self.addEventListener("message", (event) => {
+  try {
+    const data = event.data;
+    if (data && data.type === "trigger-poll") {
+      const dayIndex = data.dayIndex || new Date().getDay();
+      event.waitUntil(tryPollingOnce(dayIndex));
+    }
+  } catch (err) {
+    console.error("❌ SW message handler error:", err);
+  }
 });

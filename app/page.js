@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
+import { ensurePushSubscription } from "../public/background-sync-helper"; // ปรับ path ให้ถูกต้อง (Next.js client-side import ทำได้ถ้ามี export)
 
 // ดึงข้อมูลกิจวัตร
 async function fetchSchedule() {
@@ -50,6 +51,8 @@ export default function Home() {
         .register("/sw.js")
         .then((reg) => {
           setRegistration(reg);
+          // สมัคร Push Subscription (จะบันทึกไปที่ /api/subscribe-push)
+          ensurePushSubscription().catch((e) => console.warn("Push subscribe failed:", e));
           connectToRealtimeNotifications();
         })
         .catch((error) => {
@@ -65,40 +68,44 @@ export default function Home() {
     // eslint-disable-next-line
   }, []);
 
-  // เชื่อมต่อ SSE Real-Time
+  // เชื่อมต่อ SSE Real-Time (ยังคงเก็บเป็น fallback / optional)
   function connectToRealtimeNotifications() {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
-    const es = new window.EventSource("/api/notifications/subscribe");
-    eventSourceRef.current = es;
+    try {
+      const es = new window.EventSource("/api/notifications/subscribe");
+      eventSourceRef.current = es;
 
-    es.onopen = () => {
-      setRealtimeStatus("🟢 เชื่อมต่อแล้ว (Real-Time)");
-    };
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "upcoming-task") {
-          const taskId = `${data.dayIndex}-${data.task.start}-${data.task.task}`;
-          if (!notifiedTasks.has(taskId)) {
-            sendNotification(`🔔 ถึงเวลาเริ่มกิจวัตร!`, {
-              body: `${data.task.start} - ${data.task.task}\n\n📝 ${data.task.description}`,
-              tag: `task-${data.task.start}`,
-            });
-            setNotifiedTasks((prev) => new Set(prev).add(taskId));
-            playNotificationSound();
+      es.onopen = () => {
+        setRealtimeStatus("🟢 เชื่อมต่อแล้ว (Real-Time)");
+      };
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "upcoming-task") {
+            const taskId = `${data.dayIndex}-${data.task.start}-${data.task.task}`;
+            if (!notifiedTasks.has(taskId)) {
+              sendNotification(`🔔 ถึงเวลาเริ่มกิจวัตร!`, {
+                body: `${data.task.start} - ${data.task.task}\n\n📝 ${data.task.description}`,
+                tag: `task-${data.task.start}`,
+              });
+              setNotifiedTasks((prev) => new Set(prev).add(taskId));
+              playNotificationSound();
+            }
           }
+        } catch (err) {
+          // ignore
         }
-      } catch (err) {
-        // ignore
-      }
-    };
-    es.onerror = () => {
-      setRealtimeStatus("🟡 การเชื่อมต่อขาดหายไป กำลัง reconnect...");
-      es.close();
-      setTimeout(() => connectToRealtimeNotifications(), 3000);
-    };
+      };
+      es.onerror = () => {
+        setRealtimeStatus("🟡 การเชื่อมต่อขาดหายไป กำลัง reconnect...");
+        es.close();
+        setTimeout(() => connectToRealtimeNotifications(), 3000);
+      };
+    } catch (err) {
+      console.warn("⚠️ SSE not available in this environment:", err);
+    }
   }
 
   // ขอ permission แจ้งเตือน
@@ -113,7 +120,7 @@ export default function Home() {
     }
   }, []);
 
-  // ส่งแจ้งเตือน
+  // ส่งแจ้งเตือน (ผ่าน Service Worker registration.showNotification)
   const sendNotification = async (title, options = {}) => {
     if (!registration) {
       console.warn("⚠️ Service Worker not ready");
@@ -222,7 +229,7 @@ export default function Home() {
       playNotificationSound();
     } else if (Notification.permission === "denied") {
       alert(
-        "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์:\n1. ไปที่ Settings\n2. หา Notifications\n3. เลือก RoutineOS และเปลี่ยนเป็น Allow"
+        "❌ คุณได้ปฏิเสธสิทธิ์แจ้งเตือน\n\nกรุณาเปิดสิทธิ์ในเบราว์เซอร์"
       );
     } else if (Notification.permission === "default") {
       Notification.requestPermission().then(async (result) => {
@@ -580,13 +587,13 @@ export default function Home() {
       >
         <div>⚡ ระบบ Real-Time แบบสตรีม (ไม่กินทรัพยากรมาก)</div>
         <div style={{ marginTop: 8 }}>
-          🔔 แจ้งเตือนจะเข้ามาทันทีเมื่อถึงกิจวัตร
+          🔔 แจ้งเตือนจะเข้ามาทันทีเมื่อถึงกิจวัตร (ถ้า browser/OS รองรับ Web Push)
         </div>
         <div style={{ marginTop: 8 }}>
           ⭐ งานปัจจุบันจะไฮไลต์เหลืองอัตโนมัติ
         </div>
         <div style={{ marginTop: 8 }}>
-          🌐 เชื่อมต่อแบบ WebSocket/SSE แท้จริง
+          🌐 เชื่อมต่อแบบ Web Push + SSE (fallback)
         </div>
       </div>
     </>
